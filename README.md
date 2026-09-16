@@ -106,5 +106,6 @@ Web/              پوستهٔ WebGL (Emscripten)
 | [WebGL](Documentation/WebGL.md) | Emscripten / WebGL2 |
 | [Windows](Documentation/Windows.md) | بیلد PC (D3D11) |
 | [PS4](Documentation/PS4.md) | لینوکس روی PS4 |
+| [Termux](Documentation/Termux.md) | بیلد و اجرا روی گوشی اندروید (Termux) |
 
 نقشهٔ راه: [ROADMAP.md](ROADMAP.md) — تاریخچه: [CHANGELOG.md](CHANGELOG.md).
