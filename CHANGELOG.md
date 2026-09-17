@@ -19,6 +19,29 @@
 می‌دارد. نسخه‌های پیش از `0.1.0` تاریخ شمسی انتشار بودند (`1405.06.05` تا
 `1405.06.14.3`)؛ آن بخش‌ها همان‌طور که نوشته شده‌اند می‌مانند.
 
+## نسخهٔ 0.30.0 — بازنویسی کامل editor: از Java به native C++ روی Poco
+
+**تاریخ:** ۱۴۰۴/۰۶/۲۴ (2026-09-15)
+
+editor موتور بازی‌سازی KIMIA حالا یک UI **کاملاً native** است که به‌جای پنل‌های Java روی SurfaceView، مستقیماً در C++ روی GLES (با fallback CPU raster) کشیده می‌شود. این فاز شامل editor جدید (immediate-mode toolkit، پنل‌های dockable با splitter، toolbar، object tree، property sheet، log، theme Dark Pro) و اتصال JNI به Android jni_glue است.
+
+**تغییرات کلیدی:**
+
+- **EditorUI کتابخانهٔ جدید** (`Engine/EditorUI/`): `kimia::ui::initialize / draw / submitPointer / takeDrawCmds / resize / shutdown` — یک toolkit مستقل که در test build بدون GL هم کار می‌کند.
+- **RasterBridge** (`Engine/EditorUI/src/RasterBridge.cpp`): `rasteriseOver` که editor را روی یک scratch RGBA می‌کشد و سپس alpha-composite روی RGB یا RGBA frame می‌کند — هم مسیر GPU هم software را پشتیبانی می‌کند.
+- **NativePainter** (`Engine/EditorUI/src/NativePainter.cpp`): یک helper واحد برای `paintNativeEditor(image, editor)` که در jni_glue و در test‌های end-to-end استفاده می‌شود.
+- **jni_glue.cpp**: `kimia::ui::initialize` در ابتدای render thread؛ `kimia::ui::resize` در `nativeSurfaceChanged`؛ فراخوانی `kimia::ui::paintNativeEditor` بعد از HUD در هر دو مسیر GPU و software.
+- **JNI جدید**: `nativeSetUseNativeEditor(boolean)` برای فعال/غیرفعال کردن overlay (default off، چون UI قدیمی Java هنوز پشتیبانی می‌شود)؛ `nativeEditorTouch(action, pointerId, x, y)` برای forward کردن MotionEvent.
+- **MainActivity**: چک‌باکس "Use native EditorUI overlay (Phase 2)" در settings؛ وقتی روشن باشد، edit panel Java پنهان می‌شود (چون editor جدید خودش Object Tree / Property Sheet / Toolbar / Log را می‌کشد).
+
+**تست‌ها:** ۵ RasterBridge unit test + ۲ EditorUI integration test + ۴ NativePainter integration test (draws over RGB scene، select command engine را update می‌کند، uncovered pixels حفظ می‌شوند، draw دوبار سازگار است). ۱۲ تست جدید که همه در Linux بدون GL پاس می‌شوند.
+
+**تأیید ساخت:** CI workflow `Build Android APK` روی commit `0a712d2` و بعد از این commit build می‌گیرد؛ فاز ۳ (جایگزینی کامل ListView Java با editor native) بعد از تست روی Poco گوشی.
+
+**فاز ۴ — GLES3 inline pipeline (GitHub `a07825f`):** EditorGl حالا واقعاً paint می‌کند. در `init()` shader rounded-rect + atlas-sampling را compile/link می‌کند، VAO+VBO با ۵ per-vertex attribute می‌سازد، و texture atlas (2048×8 RGBA) از buildAtlas() بارگذاری می‌کند. `paint()` همهٔ DrawCmd‌ها را bake می‌کند، `bufferData` با `GL_STREAM_DRAW` می‌کند، و یک `drawArrays` صادر می‌کند. `GLFunctions` با `drawArraysFn`، `uniform2f` (از `uniform3f` با z=0)، `GL_TRUE/GL_FALSE/GL_STREAM_DRAW/GL_DYNAMIC_DRAW` extend شد. NativePainter مسیر GPU-aware: اگر `gl.ready()` باشد GPU paint می‌کند، در غیر این صورت CPU rasteriseOver. EditorGlTests به ۷ تست extend شد (init builds atlas، destroy not-ready، paint empty no-op، paintEditorGl function exists، paint rect/glyph safe، atlas populated after init).
+
+**فاز ۴+ — Gizmo + UndoStack + AssetBrowser + Timeline + PhysicsPanel:** Timeline با چهار transport button (Play/Stop/Step/Reset) و playhead marker. PhysicsPanel با Box/Sphere/Plane/Capsule shape picker، mass/friction/restitution/extents، Static/Dynamic/Kinematic toggle، و trigger checkbox. Gizmo با چهار mode (Select/Move/Rotate/Scale) که فعلاً فقط marker زرد روی screen-space origin می‌کشد. UndoStack با 256 capacity، push/undo/redo/clear، و ۹ تست که contract استاندارد Ctrl+Z / Ctrl+Shift+Z را پین می‌کنند. AssetBrowser که فایل‌های assets را با dot رنگی per-kind لیست می‌کند (Model آبی، Image نارنجی، Scene سبز). Gizmo API stub: `Gizmo.h/Gizmo.cpp` با `GizmoMode::{Select,Move,Rotate,Scale}`، `gizmoHitTest(worldOrigin, viewProjection, w, h, mode, mx, my)` (فعلاً no-hit) و `drawGizmo(...)` که یک marker زرد ۱۲×۱۲ در جای screen-space origin می‌کشد. ray-vs-arrow / ray-vs-ring / ray-vs-cube math در فاز ۵ می‌آید.
+
 **زمان توسعه** از مُهر زمانی کامیت‌های Git محاسبه می‌شود (فاصلهٔ اولین تا
 آخرین کامیت هر نسخه، به وقت تهران)؛ عدد تقریبی و صادقانه است، نه تخمین.
 

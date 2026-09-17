@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>KIMIA — Iran Street Soccer · فوتبال خیابونی</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no" />
+<style>
+  /* Charcoal + golden brand palette, copied verbatim from the old
+     KIMIA engine WebViewer so the look matches the rest of the project. */
+  :root {
+    --bg: #101014;
+    --ink: #e8e8ec;
+    --dim: #9a9aa5;
+    --mute: #7a7a88;
+    --accent: #d9a441;
+    --good: #7fd47f;
+    --bad: #d08a80;
+    --line: #3a3a44;
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  body {
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  canvas#scene { display: block; width: 100vw; height: 100vh; }
+
+  /* Title bar */
+  header {
+    position: fixed; top: 0; left: 0; right: 0;
+    padding: 12px 16px 8px;
+    background: linear-gradient(180deg, rgba(16,16,20,.92), rgba(16,16,20,0));
+    z-index: 4;
+    pointer-events: none;
+  }
+  header h1 {
+    margin: 0; font-size: 18px; font-weight: 600;
+    letter-spacing: .02em; color: var(--accent);
+  }
+  header .hint {
+    margin-top: 4px;
+    color: var(--dim); font-size: 12px; letter-spacing: .04em;
+  }
+
+  /* Score + time pill (top-right) */
+  #scoreboard {
+    position: fixed; top: 12px; right: 12px;
+    background: rgba(20,20,26,.78);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    z-index: 4;
+    pointer-events: none;
+    text-align: right;
+  }
+  #scoreboard .row { display: flex; gap: 10px; align-items: baseline; justify-content: flex-end; }
+  #scoreboard .score { font-size: 22px; font-weight: 700; color: var(--accent); }
+  #scoreboard .time  { font-size: 12px; color: var(--good); }
+  #scoreboard .story {
+    margin-top: 4px; font-size: 12px; color: var(--ink); max-width: 30vw;
+    text-align: right;
+  }
+  #scoreboard .story small { color: var(--mute); }
+
+  /* Camera tag (bottom-left) */
+  #cam-tag {
+    position: fixed; bottom: 12px; left: 12px;
+    padding: 6px 10px;
+    background: rgba(20,20,26,.7);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-family: ui-monospace, monospace;
+    font-size: 11px; color: var(--mute);
+    z-index: 4;
+    pointer-events: none;
+  }
+  #cam-tag b { color: var(--accent); }
+
+  /* Control pad (bottom-right, matches the old engine pad style) */
+  #pad {
+    position: fixed; right: 12px; bottom: 12px;
+    display: flex; flex-wrap: wrap; gap: 8px;
+    max-width: 60vw; justify-content: flex-end;
+    z-index: 4;
+  }
+  .btn {
+    min-width: 52px; min-height: 44px;
+    padding: 8px 12px; font-size: 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #23232c;
+    color: var(--ink);
+    text-align: center; cursor: pointer;
+    font-family: inherit;
+    transition: background .12s ease;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn:active { background: #3d4a7a; }
+  .btn.toggle-on { background: #3d4a7a; border-color: var(--accent); color: var(--accent); }
+
+  /* Look / drag strip (left edge, for camera orbit on touch) */
+  #look {
+    position: fixed; left: 12px; top: 50%;
+    transform: translateY(-50%);
+    width: 96px; height: 220px;
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--mute); font-size: 12px;
+    touch-action: none;
+    z-index: 4;
+    background: rgba(20,20,26,.4);
+  }
+
+  /* Stats line — kept in the same green-on-dark style as the old viewer */
+  #stats {
+    position: fixed; left: 12px; bottom: 56px;
+    font-family: ui-monospace, monospace;
+    font-size: 11px; color: var(--good);
+    white-space: pre;
+    z-index: 4;
+    pointer-events: none;
+    background: rgba(16,16,20,.55);
+    border-radius: 6px;
+    padding: 4px 8px;
+  }
+
+  /* Splash overlay (mirrors the old one so the look is consistent) */
+  #splash {
+    position: fixed; inset: 0;
+    background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 16px;
+    z-index: 99;
+    transition: opacity .4s ease;
+  }
+  #splash.hidden { opacity: 0; pointer-events: none; }
+  .ring {
+    width: 44px; height: 44px; border-radius: 50%;
+    border: 3px solid rgba(217, 164, 65, .15);
+    border-top-color: var(--accent);
+    animation: spin .9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #splash .label { color: var(--dim); font-size: 13px; letter-spacing: .04em; }
+  #splash .error { color: var(--bad); font-size: 12px; display: none; max-width: 70vw; text-align: center; }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<header>
+  <h1>KIMIA — Iran Street Soccer · فوتبال خیابونی</h1>
+  <div class="hint">Touch-pad drag camera · buttons switch cam modes</div>
+</header>
+
+<div id="scoreboard">
+  <div class="row"><span class="score" id="home">0</span><span>—</span><span class="score" id="away">0</span></div>
+  <div class="time"><span id="time">0.0</span>s · Koye-Abouzar</div>
+  <div class="story" id="story" style="display:none"><small>▶</small> <span id="story-text"></span></div>
+</div>
+
+<div id="cam-tag">CAM: <b id="cam-mode">Chase</b></div>
+
+<div id="pad">
+  <button class="btn" data-mode="Free">Free</button>
+  <button class="btn" data-mode="Chase">Chase</button>
+  <button class="btn" data-mode="Helicopter">Heli</button>
+  <button class="btn" data-mode="Replay">Replay</button>
+  <button class="btn" id="zoomOut">− zoom</button>
+  <button class="btn" id="zoomIn">+ zoom</button>
+  <button class="btn" id="slowmo">SlowMo ×0.25</button>
+  <button class="btn" id="fast">Fast ×4</button>
+</div>
+
+<div id="look">drag here to orbit</div>
+<div id="stats">waiting for first snapshot…</div>
+
+<div id="splash">
+  <div class="ring"></div>
+  <div class="label" id="splash-label">Loading KIMIA…</div>
+  <div class="error" id="splash-error"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.158.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+
+const viewer = (() => {
+  // ---- Three.js bootstrap ----
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x101014);
+  scene.fog = new THREE.Fog(0x101014, 30, 90);
+
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
+  camera.position.set(0, 14, 18);
+  camera.lookAt(0, 0, 0);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, canvas: document.getElementById("scene") });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+
+  // Lights
+  scene.add(new THREE.HemisphereLight(0xffe07a, 0x202035, 0.65));
+  const sun = new THREE.DirectionalLight(0xffe7b0, 0.95);
+  sun.position.set(20, 30, 14);
+  scene.add(sun);
+
+  // Pitch ground
+  const pitchGeo = new THREE.PlaneGeometry(28, 16);
+  const pitchMat = new THREE.MeshStandardMaterial({
+    color: 0x2c3a26, roughness: 0.85, metalness: 0.0,
+  });
+  const pitch = new THREE.Mesh(pitchGeo, pitchMat);
+  pitch.rotation.x = -Math.PI / 2;
+  scene.add(pitch);
+
+  // Alley walls (two long ones)
+  for (const side of [-1, 1]) {
+    const wGeo = new THREE.BoxGeometry(28, 0.6, 0.4);
+    const wMat = new THREE.MeshStandardMaterial({ color: 0x4a3520, roughness: 0.95 });
+    const w = new THREE.Mesh(wGeo, wMat);
+    w.position.set(0, 0.3, side * 8.1);
+    scene.add(w);
+  }
+  for (const side of [-1, 1]) {
+    const wGeo = new THREE.BoxGeometry(0.4, 1.2, 16);
+    const wMat = new THREE.MeshStandardMaterial({ color: 0x342818, roughness: 0.95 });
+    const w = new THREE.Mesh(wGeo, wMat);
+    w.position.set(side * 14.1, 0.6, 0);
+    scene.add(w);
+  }
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      const bGeo = new THREE.CylinderGeometry(0.07, 0.07, 1.4, 12);
+      const bMat = new THREE.MeshStandardMaterial({ color: 0x6a6e74, roughness: 0.4, metalness: 0.7 });
+      const b = new THREE.Mesh(bGeo, bMat);
+      b.position.set(sx * 13.6, 0.7, sz * 7.6);
+      scene.add(b);
+    }
+  }
+
+  const teamGeo = new THREE.SphereGeometry(0.35, 12, 10);
+  const homeMat = new THREE.MeshStandardMaterial({ color: 0xff4a4a, roughness: 0.6 });
+  const awayMat = new THREE.MeshStandardMaterial({ color: 0x4ad8ff, roughness: 0.6 });
+  const playerMeshes = new Map();
+
+  function getOrMakePlayer(side, num) {
+    const key = `${side}${num}`;
+    if (playerMeshes.has(key)) return playerMeshes.get(key);
+    const mat = side === "H" ? homeMat : awayMat;
+    const m = new THREE.Mesh(teamGeo, mat);
+    m.position.y = 0.4;
+    scene.add(m);
+    playerMeshes.set(key, m);
+    return m;
+  }
+
+  const ballGeo = new THREE.SphereGeometry(0.22, 14, 10);
+  const ballMat = new THREE.MeshStandardMaterial({ color: 0xffe07a, roughness: 0.45, metalness: 0.05 });
+  const ball = new THREE.Mesh(ballGeo, ballMat);
+  ball.position.set(0, 0.22, 0);
+  scene.add(ball);
+
+  // UI hookup (mirrors the old engine pad)
+  const camModeLabel = document.getElementById("cam-mode");
+  document.querySelectorAll("#pad button[data-mode]").forEach(btn => {
+    btn.addEventListener("click", () => setMode(btn.dataset.mode));
+  });
+  document.getElementById("zoomOut").addEventListener("click", () => zoom(0.85));
+  document.getElementById("zoomIn") .addEventListener("click", () => zoom(1.18));
+  document.getElementById("slowmo") .addEventListener("click", () => timeScale(0.25));
+  document.getElementById("fast")   .addEventListener("click", () => timeScale(4.0));
+
+  // Touch-pad look strip → drag to orbit the camera around the ball
+  const look = document.getElementById("look");
+  let dragging = false, lastX = 0, lastY = 0;
+  look.addEventListener("pointerdown", e => {
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+    look.setPointerCapture(e.pointerId);
+  });
+  look.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+    state.yaw   += dx * 0.01;
+    state.pitch += dy * 0.01;
+    state.pitch = Math.max(-1.2, Math.min(1.2, state.pitch));
+  });
+  look.addEventListener("pointerup", () => { dragging = false; });
+
+  let currentMode = "Chase";
+  let orbitAngle = 0, orbitRadius = 18, orbitPitchDeg = 28;
+  function setMode(m) {
+    currentMode = m;
+    camModeLabel.textContent = m;
+    document.querySelectorAll("#pad button[data-mode]").forEach(b => {
+      b.classList.toggle("toggle-on", b.dataset.mode === m);
+    });
+  }
+  function zoom(f) { orbitRadius = Math.max(4, Math.min(60, orbitRadius * f)); }
+
+  const state = {
+    ball: { x: 0, y: 0, vx: 0, vy: 0 },
+    time: 0,
+    homeScore: 0, awayScore: 0,
+    players: [],
+    cam: { mode: 1 /* Chase */ },
+    storyHeadline: "",
+    timeScale: 1.0,
+    yaw: 0, pitch: 0,
+  };
+  function timeScale(s) {
+    state.timeScale = (state.timeScale === s) ? 1.0 : s;
+    const sm = document.getElementById("slowmo");
+    const ft = document.getElementById("fast");
+    sm.classList.toggle("toggle-on", state.timeScale === 0.25);
+    ft.classList.toggle("toggle-on", state.timeScale === 4.0);
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch("state.json", { cache: "no-store" });
+      if (!r.ok) return;
+      const data = await r.json();
+      state.ball = data.ball;
+      state.time = data.time;
+      state.homeScore = data.homeScore;
+      state.awayScore = data.awayScore;
+      state.players = data.players || [];
+      state.storyHeadline = data.storyHeadline || "";
+      if (data.cam) {
+        state.cam = data.cam;
+        if (!Number.isNaN(parseFloat(data.cam.angle))) orbitAngle = parseFloat(data.cam.angle);
+        if (!Number.isNaN(parseFloat(data.cam.radius))) orbitRadius = parseFloat(data.cam.radius);
+        if (!Number.isNaN(parseFloat(data.cam.pitch))) orbitPitchDeg = parseFloat(data.cam.pitch);
+        const modeMap = { 0: "Free", 1: "Chase", 2: "Helicopter", 3: "Replay" };
+        const newMode = modeMap[data.cam.mode] || "Chase";
+        if (newMode !== currentMode) setMode(newMode);
+      }
+      // Stats line (green monospace, like the old viewer)
+      document.getElementById("stats").textContent =
+        `t=${state.time.toFixed(1)}s · Home ${state.homeScore} · Away ${state.awayScore}\n` +
+        `ball=(${state.ball.x.toFixed(2)}, ${state.ball.y.toFixed(2)}) ` +
+        `v=(${state.ball.vx.toFixed(1)}, ${state.ball.vy.toFixed(1)})`;
+    } catch (e) { /* ignore — file may not exist yet */ }
+  }
+  setInterval(poll, 33);
+
+  const homeEl  = document.getElementById("home");
+  const awayEl  = document.getElementById("away");
+  const timeEl  = document.getElementById("time");
+  const storyEl = document.getElementById("story");
+  const storyTextEl = document.getElementById("story-text");
+  const splash = document.getElementById("splash");
+  let splashHidden = false;
+
+  function frame() {
+    requestAnimationFrame(frame);
+    poll();
+
+    homeEl.textContent = state.homeScore;
+    awayEl.textContent = state.awayScore;
+    timeEl.textContent = state.time.toFixed(1);
+    if (state.storyHeadline) {
+      storyEl.style.display = "block";
+      storyTextEl.textContent = state.storyHeadline;
+    } else {
+      storyEl.style.display = "none";
+    }
+
+    ball.position.set(state.ball.x, 0.22, state.ball.y);
+
+    for (const pl of state.players) {
+      const m = getOrMakePlayer(pl.side, pl.n);
+      m.position.set(pl.x, 0.4, pl.y);
+    }
+
+    if (state.cam && state.cam.eye) {
+      const e = state.cam.eye;
+      const l = state.cam.look;
+      camera.position.set(e.x, e.y, e.z);
+      camera.lookAt(l.x, l.y, l.z);
+      camera.fov = state.cam.fov;
+      camera.updateProjectionMatrix();
+    }
+
+    renderer.render(scene, camera);
+
+    if (!splashHidden && state.players.length > 0) {
+      splash.classList.add("hidden");
+      splashHidden = true;
+    }
+  }
+  frame();
+
+  window.addEventListener("resize", () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  setMode("Chase");
+
+  return { zoom, timeScale, state };
+})();
+window.viewer = viewer;
+</script>
+</body>
+</html>

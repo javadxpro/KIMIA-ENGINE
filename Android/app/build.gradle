@@ -12,7 +12,7 @@ android {
         minSdk 21
         targetSdk 34
         versionCode 1
-        versionName '0.29.0'
+        versionName '0.30.0'
 
         ndk {
             // Poco X3 Pro and all modern phones are arm64; the other ABIs keep

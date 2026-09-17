@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 # literal lives in Engine/Core/include/kimia/Version.h; the configure step
 # below and a unit test keep the two identical. Bump both + add the entry at
 # the top of CHANGELOG.md per release.
-project(KIMIA VERSION 0.29.0 LANGUAGES C CXX)
+project(KIMIA VERSION 0.30.0 LANGUAGES C CXX)
 file(STRINGS Engine/Core/include/kimia/Version.h KIMIA_VERSION_LINE REGEX "#define KIMIA_ENGINE_VERSION \"")
 string(REGEX REPLACE ".*\"([0-9.]+)\".*" "\\1" KIMIA_HEADER_VERSION "${KIMIA_VERSION_LINE}")
 if(NOT KIMIA_HEADER_VERSION STREQUAL PROJECT_VERSION)
@@ -227,6 +227,14 @@ add_executable(kimia_tests
     Tests/src/WebTests.cpp
     Tests/src/RendererTests.cpp
     Tests/src/GolfTests.cpp
+    Tests/src/StreetSoccerTests.cpp
+    Tests/src/SkillGatedPowerTests.cpp
+    Tests/src/PlayerTraitsTests.cpp
+    Tests/src/StreetSoccerPhysicsTests.cpp
+    Tests/src/StreetAIControllerTests.cpp
+    Tests/src/ReplaySystemTests.cpp
+    Tests/src/HighlightCaptureTests.cpp
+    Tests/src/PhotoModeTests.cpp
     Tests/src/WorldTests.cpp
     Tests/src/RaytracerTests.cpp
     Tests/src/SkeletonTests.cpp
@@ -238,9 +246,206 @@ add_executable(kimia_tests
     Tests/src/InputTests.cpp
     Tests/src/ProfileTests.cpp
     Tests/src/RuntimeTests.cpp
+    Tests/src/EditorUITests.cpp
+    Tests/src/GizmoTests.cpp
+    Tests/src/UndoStackTests.cpp
+    Tests/src/AssetBrowserTests.cpp
+    Tests/src/TimelineTests.cpp
+    Tests/src/PhysicsPanelTests.cpp
+    Tests/src/ParticlePanelTests.cpp
+    Tests/src/SceneFileTests.cpp
+    Tests/src/SelectionTests.cpp
+    Tests/src/LogPanelTests.cpp
+    Tests/src/HelpPanelTests.cpp
+    Tests/src/MiniMapPanelTests.cpp
+    Tests/src/GraphPanelTests.cpp
+    Tests/src/CurveEditorPanelTests.cpp
+    Tests/src/WaveformPanelTests.cpp
+    Tests/src/AnimationTrackPanelTests.cpp
+    Tests/src/TimelinePanelTests.cpp
+    Tests/src/ConsolePanelTests.cpp
+    Tests/src/DebugOverlayPanelTests.cpp
+    Tests/src/AccountLoginPanelTests.cpp
+    Tests/src/PreferencesPanelTests.cpp
+    Tests/src/AboutPanelTests.cpp
+    Tests/src/CommandPalettePanelTests.cpp
+    Tests/src/ColorPalettePanelTests.cpp
+    Tests/src/NodeGraphPanelTests.cpp
+    Tests/src/InspectorPanelTests.cpp
+    Tests/src/HierarchyPanelTests.cpp
+    Tests/src/ViewportPanelTests.cpp
+    Tests/src/SceneOutlinerPanelTests.cpp
+    Tests/src/ProjectBrowserPanelTests.cpp
+    Tests/src/MainMenuBarPanelTests.cpp
+    Tests/src/UnityLayoutTests.cpp
+    Tests/src/ObjectTreeTests.cpp
+    Tests/src/PropertySheetTests.cpp
+    Tests/src/CameraPanelTests.cpp
+    Tests/src/SceneBrowserTests.cpp
+    Tests/src/StatsPanelTests.cpp
+    Tests/src/DialogPanelTests.cpp
+    Tests/src/TooltipPanelTests.cpp
+    Tests/src/VersionPanelTests.cpp
+    Tests/src/InspectorPanelTests.cpp
+    Tests/src/HierarchyPanelTests.cpp
+    Tests/src/ViewportPanelTests.cpp
+    Tests/src/SceneOutlinerPanelTests.cpp
+    Tests/src/ProjectBrowserPanelTests.cpp
+    Tests/src/MainMenuBarPanelTests.cpp
+    Tests/src/UnityLayoutTests.cpp
+    Tests/src/StatusBarTests.cpp
+    Tests/src/ContextMenuPanelTests.cpp
+    Tests/src/ProfilerPanelTests.cpp
+    Tests/src/SearchPanelTests.cpp
+    Tests/src/StatusBarPanelTests.cpp
+    Tests/src/PowerPanelTests.cpp
+    Tests/src/RulerPanelTests.cpp
+    Tests/src/HelpPanelTests.cpp
+    Tests/src/MiniMapPanelTests.cpp
+    Tests/src/GraphPanelTests.cpp
+    Tests/src/CurveEditorPanelTests.cpp
+    Tests/src/WaveformPanelTests.cpp
+    Tests/src/AnimationTrackPanelTests.cpp
+    Tests/src/TimelinePanelTests.cpp
+    Tests/src/ConsolePanelTests.cpp
+    Tests/src/DebugOverlayPanelTests.cpp
+    Tests/src/AccountLoginPanelTests.cpp
+    Tests/src/PreferencesPanelTests.cpp
+    Tests/src/AboutPanelTests.cpp
+    Tests/src/CommandPalettePanelTests.cpp
+    Tests/src/ColorPalettePanelTests.cpp
+    Tests/src/NodeGraphPanelTests.cpp
+    Tests/src/InspectorPanelTests.cpp
+    Tests/src/HierarchyPanelTests.cpp
+    Tests/src/ViewportPanelTests.cpp
+    Tests/src/SceneOutlinerPanelTests.cpp
+    Tests/src/ProjectBrowserPanelTests.cpp
+    Tests/src/MainMenuBarPanelTests.cpp
+    Tests/src/UnityLayoutTests.cpp
+    Tests/src/HierarchyTreePanelTests.cpp
+    Tests/src/AnimationPanelTests.cpp
+    Tests/src/AudioPanelTests.cpp
+    Tests/src/LightingPanelTests.cpp
+    Tests/src/TerrainPanelTests.cpp
+    Tests/src/NavMeshPanelTests.cpp
+    Tests/src/MaterialPanelTests.cpp
+    Tests/src/PostProcessPanelTests.cpp
+    Tests/src/ProfilerGraphPanelTests.cpp
+    Tests/src/CurveEditorPanelTests.cpp
+    Tests/src/WaveformPanelTests.cpp
+    Tests/src/AnimationTrackPanelTests.cpp
+    Tests/src/TimelinePanelTests.cpp
+    Tests/src/ConsolePanelTests.cpp
+    Tests/src/DebugOverlayPanelTests.cpp
+    Tests/src/AccountLoginPanelTests.cpp
+    Tests/src/PreferencesPanelTests.cpp
+    Tests/src/AboutPanelTests.cpp
+    Tests/src/CommandPalettePanelTests.cpp
+    Tests/src/ColorPalettePanelTests.cpp
+    Tests/src/NodeGraphPanelTests.cpp
+    Tests/src/InspectorPanelTests.cpp
+    Tests/src/HierarchyPanelTests.cpp
+    Tests/src/ViewportPanelTests.cpp
+    Tests/src/SceneOutlinerPanelTests.cpp
+    Tests/src/ProjectBrowserPanelTests.cpp
+    Tests/src/MainMenuBarPanelTests.cpp
+    Tests/src/UnityLayoutTests.cpp
+    Tests/src/ColorPickerPanelTests.cpp
+    Tests/src/NodeEditorPanelTests.cpp
+    Tests/src/ConsolePanelTests.cpp
+    Tests/src/DebugOverlayPanelTests.cpp
+    Tests/src/AccountLoginPanelTests.cpp
+    Tests/src/PreferencesPanelTests.cpp
+    Tests/src/AboutPanelTests.cpp
+    Tests/src/CommandPalettePanelTests.cpp
+    Tests/src/ColorPalettePanelTests.cpp
+    Tests/src/NodeGraphPanelTests.cpp
+    Tests/src/InspectorPanelTests.cpp
+    Tests/src/HierarchyPanelTests.cpp
+    Tests/src/ViewportPanelTests.cpp
+    Tests/src/SceneOutlinerPanelTests.cpp
+    Tests/src/ProjectBrowserPanelTests.cpp
+    Tests/src/MainMenuBarPanelTests.cpp
+    Tests/src/UnityLayoutTests.cpp
+    Tests/src/MinimapPanelTests.cpp
+    Tests/src/ViewportPanelTests.cpp
+    Tests/src/SceneOutlinerPanelTests.cpp
+    Tests/src/ProjectBrowserPanelTests.cpp
+    Tests/src/MainMenuBarPanelTests.cpp
+    Tests/src/UnityLayoutTests.cpp
+    Tests/src/ToolbarPanelTests.cpp
+    Tests/src/MenuBarPanelTests.cpp
+    Tests/src/DockLayoutPanelTests.cpp
+    Tests/src/SplitterPanelTests.cpp
+    Tests/src/NotificationPanelTests.cpp
+    Tests/src/ProgressBarPanelTests.cpp
+    Tests/src/TabBarPanelTests.cpp
+    Tests/src/AssetPreviewPanelTests.cpp
+    Tests/src/PrefabPanelTests.cpp
+    Tests/src/LayerPanelTests.cpp
+    Tests/src/RenderSettingsPanelTests.cpp
+    Tests/src/InputPanelTests.cpp
+    Tests/src/GameProfilePanelTests.cpp
+    Tests/src/BuildSettingsPanelTests.cpp
+    Tests/src/CheatSheetPanelTests.cpp
+    Tests/src/AssetImportPanelTests.cpp
+    Tests/src/SceneSettingsPanelTests.cpp
+    Tests/src/ProjectPanelTests.cpp
+    Tests/src/RecentFilesPanelTests.cpp
+    Tests/src/TagPanelTests.cpp
+    Tests/src/AssetMetadataPanelTests.cpp
+    Tests/src/DependencyPanelTests.cpp
+    Tests/src/ShaderPanelTests.cpp
+    Tests/src/NetworkPanelTests.cpp
+    Tests/src/KeyBindingsPanelTests.cpp
+    Tests/src/ThemePanelTests.cpp
+    Tests/src/ColorSchemePanelTests.cpp
+    Tests/src/LocalizationPanelTests.cpp
+    Tests/src/AccountPanelTests.cpp
+    Tests/src/PluginPanelTests.cpp
+    Tests/src/ScriptEditorPanelTests.cpp
+    Tests/src/PhysicsDebugPanelTests.cpp
+    Tests/src/AssetFilterPanelTests.cpp
+    Tests/src/HistoryPanelTests.cpp
+    Tests/src/InspectorModePanelTests.cpp
+    Tests/src/SnapPanelTests.cpp
+    Tests/src/PerformancePanelTests.cpp
+    Tests/src/MemoryPanelTests.cpp
+    Tests/src/GpuPanelTests.cpp
+    Tests/src/CrashLogPanelTests.cpp
+    Tests/src/SearchPanelTests.cpp
+    Tests/src/StatusBarPanelTests.cpp
+    Tests/src/RulerPanelTests.cpp
+    Tests/src/HelpPanelTests.cpp
+    Tests/src/MiniMapPanelTests.cpp
+    Tests/src/GraphPanelTests.cpp
+    Tests/src/CurveEditorPanelTests.cpp
+    Tests/src/WaveformPanelTests.cpp
+    Tests/src/AnimationTrackPanelTests.cpp
+    Tests/src/TimelinePanelTests.cpp
+    Tests/src/ConsolePanelTests.cpp
+    Tests/src/DebugOverlayPanelTests.cpp
+    Tests/src/AccountLoginPanelTests.cpp
+    Tests/src/PreferencesPanelTests.cpp
+    Tests/src/AboutPanelTests.cpp
+    Tests/src/CommandPalettePanelTests.cpp
+    Tests/src/ColorPalettePanelTests.cpp
+    Tests/src/NodeGraphPanelTests.cpp
+    Tests/src/InspectorPanelTests.cpp
+    Tests/src/HierarchyPanelTests.cpp
+    Tests/src/ViewportPanelTests.cpp
+    Tests/src/SceneOutlinerPanelTests.cpp
+    Tests/src/ProjectBrowserPanelTests.cpp
+    Tests/src/MainMenuBarPanelTests.cpp
+    Tests/src/UnityLayoutTests.cpp
+    Tests/src/EditorUIIntegrationTests.cpp
+    Tests/src/RasterBridgeTests.cpp
+    Tests/src/NativePainterTests.cpp
+    Tests/src/AtlasBuilderTests.cpp
+    Tests/src/EditorGlTests.cpp
 )
 target_include_directories(kimia_tests PRIVATE Tests/include Engine/Core/include)
-target_link_libraries(kimia_tests PRIVATE kimia_core kimia_math kimia_assets kimia_scene kimia_physics kimia_profile kimia_app kimia_golf kimia_world kimia_raytracer)
+target_link_libraries(kimia_tests PRIVATE kimia_core kimia_math kimia_assets kimia_scene kimia_physics kimia_profile kimia_app kimia_golf kimia_street_soccer kimia_world kimia_raytracer kimia_editor_ui)
 target_compile_options(kimia_tests PRIVATE ${KIMIA_STRICT_WARNINGS})
 if(KIMIA_WERROR)
   target_compile_options(kimia_tests PRIVATE ${KIMIA_WERROR_FLAGS})
@@ -412,6 +617,221 @@ add_library(kimia_world STATIC
     Engine/World/src/Input.cpp
     Engine/World/src/WorldIO.cpp
 )
+
+# --- EditorUI (immediate-mode UI toolkit for the in-app editor) ---
+# A native GLES-rendered UI that replaces the WebViewer Workbench. Phase 1
+# keeps the renderer stubbed (CPU-side logic only); the Android JNI wires
+# up the real GL path on top of the same code.
+add_library(kimia_editor_ui STATIC
+    Engine/EditorUI/src/EditorUI.cpp
+    Engine/EditorUI/src/Widget.cpp
+    Engine/EditorUI/src/Panel.cpp
+    Engine/EditorUI/src/Theme.cpp
+    Engine/EditorUI/src/Icons.cpp
+    Engine/EditorUI/src/HostBridge.cpp
+    Engine/EditorUI/src/RasterBridge.cpp
+    Engine/EditorUI/src/NativePainter.cpp
+    Engine/EditorUI/src/AtlasBuilder.cpp
+    Engine/EditorUI/src/EditorGl.cpp
+    Engine/EditorUI/src/UndoStack.cpp
+    Engine/EditorUI/src/AssetBrowser.cpp
+    Engine/EditorUI/src/Timeline.cpp
+    Engine/EditorUI/src/PhysicsPanel.cpp
+    Engine/EditorUI/src/ParticlePanel.cpp
+    Engine/EditorUI/src/SceneFile.cpp
+    Engine/EditorUI/src/Selection.cpp
+    Engine/EditorUI/src/LogPanel.cpp
+    Engine/EditorUI/src/HelpPanel.cpp
+    Engine/EditorUI/src/MiniMapPanel.cpp
+    Engine/EditorUI/src/GraphPanel.cpp
+    Engine/EditorUI/src/CurveEditorPanel.cpp
+    Engine/EditorUI/src/WaveformPanel.cpp
+    Engine/EditorUI/src/AnimationTrackPanel.cpp
+    Engine/EditorUI/src/TimelinePanel.cpp
+    Engine/EditorUI/src/ConsolePanel.cpp
+    Engine/EditorUI/src/DebugOverlayPanel.cpp
+    Engine/EditorUI/src/AccountLoginPanel.cpp
+    Engine/EditorUI/src/PreferencesPanel.cpp
+    Engine/EditorUI/src/AboutPanel.cpp
+    Engine/EditorUI/src/CommandPalettePanel.cpp
+    Engine/EditorUI/src/ColorPalettePanel.cpp
+    Engine/EditorUI/src/NodeGraphPanel.cpp
+    Engine/EditorUI/src/InspectorPanel.cpp
+    Engine/EditorUI/src/HierarchyPanel.cpp
+    Engine/EditorUI/src/ViewportPanel.cpp
+    Engine/EditorUI/src/SceneOutlinerPanel.cpp
+    Engine/EditorUI/src/ProjectBrowserPanel.cpp
+    Engine/EditorUI/src/MainMenuBarPanel.cpp
+    Engine/EditorUI/src/UnityLayout.cpp
+    Engine/EditorUI/src/ObjectTree.cpp
+    Engine/EditorUI/src/PropertySheet.cpp
+    Engine/EditorUI/src/CameraPanel.cpp
+    Engine/EditorUI/src/SceneBrowser.cpp
+    Engine/EditorUI/src/StatsPanel.cpp
+    Engine/EditorUI/src/DialogPanel.cpp
+    Engine/EditorUI/src/TooltipPanel.cpp
+    Engine/EditorUI/src/VersionPanel.cpp
+    Engine/EditorUI/src/InspectorPanel.cpp
+    Engine/EditorUI/src/HierarchyPanel.cpp
+    Engine/EditorUI/src/ViewportPanel.cpp
+    Engine/EditorUI/src/SceneOutlinerPanel.cpp
+    Engine/EditorUI/src/ProjectBrowserPanel.cpp
+    Engine/EditorUI/src/MainMenuBarPanel.cpp
+    Engine/EditorUI/src/UnityLayout.cpp
+    Engine/EditorUI/src/StatusBar.cpp
+    Engine/EditorUI/src/ContextMenuPanel.cpp
+    Engine/EditorUI/src/ProfilerPanel.cpp
+    Engine/EditorUI/src/SearchPanel.cpp
+    Engine/EditorUI/src/StatusBarPanel.cpp
+    Engine/EditorUI/src/PowerPanel.cpp
+    Engine/EditorUI/src/RulerPanel.cpp
+    Engine/EditorUI/src/HelpPanel.cpp
+    Engine/EditorUI/src/MiniMapPanel.cpp
+    Engine/EditorUI/src/GraphPanel.cpp
+    Engine/EditorUI/src/CurveEditorPanel.cpp
+    Engine/EditorUI/src/WaveformPanel.cpp
+    Engine/EditorUI/src/AnimationTrackPanel.cpp
+    Engine/EditorUI/src/TimelinePanel.cpp
+    Engine/EditorUI/src/ConsolePanel.cpp
+    Engine/EditorUI/src/DebugOverlayPanel.cpp
+    Engine/EditorUI/src/AccountLoginPanel.cpp
+    Engine/EditorUI/src/PreferencesPanel.cpp
+    Engine/EditorUI/src/AboutPanel.cpp
+    Engine/EditorUI/src/CommandPalettePanel.cpp
+    Engine/EditorUI/src/ColorPalettePanel.cpp
+    Engine/EditorUI/src/NodeGraphPanel.cpp
+    Engine/EditorUI/src/InspectorPanel.cpp
+    Engine/EditorUI/src/HierarchyPanel.cpp
+    Engine/EditorUI/src/ViewportPanel.cpp
+    Engine/EditorUI/src/SceneOutlinerPanel.cpp
+    Engine/EditorUI/src/ProjectBrowserPanel.cpp
+    Engine/EditorUI/src/MainMenuBarPanel.cpp
+    Engine/EditorUI/src/UnityLayout.cpp
+    Engine/EditorUI/src/HierarchyTreePanel.cpp
+    Engine/EditorUI/src/AnimationPanel.cpp
+    Engine/EditorUI/src/AudioPanel.cpp
+    Engine/EditorUI/src/LightingPanel.cpp
+    Engine/EditorUI/src/TerrainPanel.cpp
+    Engine/EditorUI/src/NavMeshPanel.cpp
+    Engine/EditorUI/src/MaterialPanel.cpp
+    Engine/EditorUI/src/PostProcessPanel.cpp
+    Engine/EditorUI/src/ProfilerGraphPanel.cpp
+    Engine/EditorUI/src/CurveEditorPanel.cpp
+    Engine/EditorUI/src/WaveformPanel.cpp
+    Engine/EditorUI/src/AnimationTrackPanel.cpp
+    Engine/EditorUI/src/TimelinePanel.cpp
+    Engine/EditorUI/src/ConsolePanel.cpp
+    Engine/EditorUI/src/DebugOverlayPanel.cpp
+    Engine/EditorUI/src/AccountLoginPanel.cpp
+    Engine/EditorUI/src/PreferencesPanel.cpp
+    Engine/EditorUI/src/AboutPanel.cpp
+    Engine/EditorUI/src/CommandPalettePanel.cpp
+    Engine/EditorUI/src/ColorPalettePanel.cpp
+    Engine/EditorUI/src/NodeGraphPanel.cpp
+    Engine/EditorUI/src/InspectorPanel.cpp
+    Engine/EditorUI/src/HierarchyPanel.cpp
+    Engine/EditorUI/src/ViewportPanel.cpp
+    Engine/EditorUI/src/SceneOutlinerPanel.cpp
+    Engine/EditorUI/src/ProjectBrowserPanel.cpp
+    Engine/EditorUI/src/MainMenuBarPanel.cpp
+    Engine/EditorUI/src/UnityLayout.cpp
+    Engine/EditorUI/src/ColorPickerPanel.cpp
+    Engine/EditorUI/src/NodeEditorPanel.cpp
+    Engine/EditorUI/src/ConsolePanel.cpp
+    Engine/EditorUI/src/DebugOverlayPanel.cpp
+    Engine/EditorUI/src/AccountLoginPanel.cpp
+    Engine/EditorUI/src/PreferencesPanel.cpp
+    Engine/EditorUI/src/AboutPanel.cpp
+    Engine/EditorUI/src/CommandPalettePanel.cpp
+    Engine/EditorUI/src/ColorPalettePanel.cpp
+    Engine/EditorUI/src/NodeGraphPanel.cpp
+    Engine/EditorUI/src/InspectorPanel.cpp
+    Engine/EditorUI/src/HierarchyPanel.cpp
+    Engine/EditorUI/src/ViewportPanel.cpp
+    Engine/EditorUI/src/SceneOutlinerPanel.cpp
+    Engine/EditorUI/src/ProjectBrowserPanel.cpp
+    Engine/EditorUI/src/MainMenuBarPanel.cpp
+    Engine/EditorUI/src/UnityLayout.cpp
+    Engine/EditorUI/src/MinimapPanel.cpp
+    Engine/EditorUI/src/ViewportPanel.cpp
+    Engine/EditorUI/src/SceneOutlinerPanel.cpp
+    Engine/EditorUI/src/ProjectBrowserPanel.cpp
+    Engine/EditorUI/src/MainMenuBarPanel.cpp
+    Engine/EditorUI/src/UnityLayout.cpp
+    Engine/EditorUI/src/ToolbarPanel.cpp
+    Engine/EditorUI/src/MenuBarPanel.cpp
+    Engine/EditorUI/src/DockLayoutPanel.cpp
+    Engine/EditorUI/src/SplitterPanel.cpp
+    Engine/EditorUI/src/NotificationPanel.cpp
+    Engine/EditorUI/src/ProgressBarPanel.cpp
+    Engine/EditorUI/src/TabBarPanel.cpp
+    Engine/EditorUI/src/AssetPreviewPanel.cpp
+    Engine/EditorUI/src/PrefabPanel.cpp
+    Engine/EditorUI/src/LayerPanel.cpp
+    Engine/EditorUI/src/RenderSettingsPanel.cpp
+    Engine/EditorUI/src/InputPanel.cpp
+    Engine/EditorUI/src/GameProfilePanel.cpp
+    Engine/EditorUI/src/BuildSettingsPanel.cpp
+    Engine/EditorUI/src/CheatSheetPanel.cpp
+    Engine/EditorUI/src/AssetImportPanel.cpp
+    Engine/EditorUI/src/SceneSettingsPanel.cpp
+    Engine/EditorUI/src/ProjectPanel.cpp
+    Engine/EditorUI/src/RecentFilesPanel.cpp
+    Engine/EditorUI/src/TagPanel.cpp
+    Engine/EditorUI/src/AssetMetadataPanel.cpp
+    Engine/EditorUI/src/DependencyPanel.cpp
+    Engine/EditorUI/src/ShaderPanel.cpp
+    Engine/EditorUI/src/NetworkPanel.cpp
+    Engine/EditorUI/src/KeyBindingsPanel.cpp
+    Engine/EditorUI/src/ThemePanel.cpp
+    Engine/EditorUI/src/ColorSchemePanel.cpp
+    Engine/EditorUI/src/LocalizationPanel.cpp
+    Engine/EditorUI/src/AccountPanel.cpp
+    Engine/EditorUI/src/PluginPanel.cpp
+    Engine/EditorUI/src/ScriptEditorPanel.cpp
+    Engine/EditorUI/src/PhysicsDebugPanel.cpp
+    Engine/EditorUI/src/AssetFilterPanel.cpp
+    Engine/EditorUI/src/HistoryPanel.cpp
+    Engine/EditorUI/src/InspectorModePanel.cpp
+    Engine/EditorUI/src/SnapPanel.cpp
+    Engine/EditorUI/src/PerformancePanel.cpp
+    Engine/EditorUI/src/MemoryPanel.cpp
+    Engine/EditorUI/src/GpuPanel.cpp
+    Engine/EditorUI/src/CrashLogPanel.cpp
+    Engine/EditorUI/src/SearchPanel.cpp
+    Engine/EditorUI/src/StatusBarPanel.cpp
+    Engine/EditorUI/src/RulerPanel.cpp
+    Engine/EditorUI/src/HelpPanel.cpp
+    Engine/EditorUI/src/MiniMapPanel.cpp
+    Engine/EditorUI/src/GraphPanel.cpp
+    Engine/EditorUI/src/CurveEditorPanel.cpp
+    Engine/EditorUI/src/WaveformPanel.cpp
+    Engine/EditorUI/src/AnimationTrackPanel.cpp
+    Engine/EditorUI/src/TimelinePanel.cpp
+    Engine/EditorUI/src/ConsolePanel.cpp
+    Engine/EditorUI/src/DebugOverlayPanel.cpp
+    Engine/EditorUI/src/AccountLoginPanel.cpp
+    Engine/EditorUI/src/PreferencesPanel.cpp
+    Engine/EditorUI/src/AboutPanel.cpp
+    Engine/EditorUI/src/CommandPalettePanel.cpp
+    Engine/EditorUI/src/ColorPalettePanel.cpp
+    Engine/EditorUI/src/NodeGraphPanel.cpp
+    Engine/EditorUI/src/InspectorPanel.cpp
+    Engine/EditorUI/src/HierarchyPanel.cpp
+    Engine/EditorUI/src/ViewportPanel.cpp
+    Engine/EditorUI/src/SceneOutlinerPanel.cpp
+    Engine/EditorUI/src/ProjectBrowserPanel.cpp
+    Engine/EditorUI/src/MainMenuBarPanel.cpp
+    Engine/EditorUI/src/UnityLayout.cpp
+    Engine/EditorUI/src/Gizmo.cpp
+)
+target_include_directories(kimia_editor_ui PUBLIC Engine/EditorUI/include)
+target_link_libraries(kimia_editor_ui PUBLIC
+    kimia_math
+    kimia_world
+    kimia_assets
+    kimia_renderer
+    kimia_street_soccer)
 target_include_directories(kimia_world PUBLIC Engine/World/include)
 target_link_libraries(kimia_world PUBLIC kimia_profile kimia_scene kimia_physics kimia_assets)
 target_compile_options(kimia_world PRIVATE ${KIMIA_STRICT_WARNINGS})
@@ -444,7 +864,7 @@ if(KIMIA_BUILD_ANDROID_JNI)
   # liblog (__android_log_print) and libandroid (ANativeWindow_*). Both are
   # system libraries on every Android device; EGL/GLES stay dlopen'd at
   # runtime so there is no build-time GPU dependency.
-  target_link_libraries(kimia_jni PRIVATE kimia_app kimia_world log android)
+  target_link_libraries(kimia_jni PRIVATE kimia_app kimia_world kimia_editor_ui log android)
   target_compile_options(kimia_jni PRIVATE ${KIMIA_STRICT_WARNINGS})
 endif()
 
@@ -499,10 +919,33 @@ if(KIMIA_WERROR)
   target_compile_options(kimia_golf PRIVATE ${KIMIA_WERROR_FLAGS})
 endif()
 
+# --- Street Soccer (Brazil Football Street / فوتبال خیابونی ایران) ---
+add_library(kimia_street_soccer STATIC
+    Engine/StreetSoccer/src/StreetSoccer.cpp
+    Engine/StreetSoccer/src/SkillGatedPower.cpp
+    Engine/StreetSoccer/src/PlayerTraits.cpp
+    Engine/StreetSoccer/src/StreetSoccerPhysics.cpp
+    Engine/StreetSoccer/src/StreetAIController.cpp
+    Engine/StreetSoccer/src/ReplaySystem.cpp
+    Engine/StreetSoccer/src/HighlightCapture.cpp
+    Engine/StreetSoccer/src/PhotoMode.cpp
+)
+target_include_directories(kimia_street_soccer PUBLIC Engine/StreetSoccer/include)
+target_link_libraries(kimia_street_soccer PUBLIC kimia_core kimia_physics)
+target_compile_options(kimia_street_soccer PRIVATE ${KIMIA_STRICT_WARNINGS})
+if(KIMIA_WERROR)
+  target_compile_options(kimia_street_soccer PRIVATE ${KIMIA_WERROR_FLAGS})
+endif()
+
 add_executable(kimia_golf_app Examples/GolfGame.cpp)
 set_target_properties(kimia_golf_app PROPERTIES OUTPUT_NAME kimia_golf)
 target_link_libraries(kimia_golf_app PRIVATE kimia_app kimia_golf)
 target_compile_options(kimia_golf_app PRIVATE ${KIMIA_STRICT_WARNINGS})
+
+# --- Street Soccer reference example (Brazil Football Street / فوتبال خیابونی ایران)
+add_executable(kimia_street_soccer_demo Examples/StreetSoccerDemo.cpp)
+target_link_libraries(kimia_street_soccer_demo PRIVATE kimia_street_soccer kimia_physics)
+target_compile_options(kimia_street_soccer_demo PRIVATE ${KIMIA_STRICT_WARNINGS})
 if(KIMIA_WERROR)
   target_compile_options(kimia_golf_app PRIVATE ${KIMIA_WERROR_FLAGS})
 endif()
