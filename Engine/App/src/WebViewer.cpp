@@ -1,0 +1,1050 @@
+#include <kimia/WebViewer.h>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+#endif
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <cstring>
+#include <fstream>
+#include <sstream>
+#include <thread>
+
+namespace kimia {
+namespace web {
+
+namespace {
+
+#ifdef _WIN32
+using SocketHandle = SOCKET;
+using SocketLength = int;
+constexpr SocketHandle kInvalidSocket = INVALID_SOCKET;
+#else
+using SocketHandle = int;
+using SocketLength = socklen_t;
+constexpr SocketHandle kInvalidSocket = -1;
+#endif
+
+void closeSocket(SocketHandle socket) {
+#ifdef _WIN32
+  if (socket != kInvalidSocket) ::closesocket(socket);
+#else
+  if (socket != kInvalidSocket) ::close(socket);
+#endif
+}
+
+void shutdownSocket(SocketHandle socket) {
+#ifdef _WIN32
+  if (socket != kInvalidSocket) ::shutdown(socket, SD_BOTH);
+#else
+  if (socket != kInvalidSocket) ::shutdown(socket, SHUT_RDWR);
+#endif
+}
+
+bool socketFailed(SocketHandle socket) { return socket == kInvalidSocket; }
+
+#ifdef _WIN32
+bool ensureWinsock() {
+  WSADATA data{};
+  return ::WSAStartup(MAKEWORD(2, 2), &data) == 0;
+}
+#endif
+
+
+std::string htmlEscape(const std::string& text) {
+  std::string out;
+  out.reserve(text.size());
+  for (const char c : text) {
+    switch (c) {
+      case '&':
+        out += "&amp;";
+        break;
+      case '<':
+        out += "&lt;";
+        break;
+      case '>':
+        out += "&gt;";
+        break;
+      case '"':
+        out += "&quot;";
+        break;
+      default:
+        out += c;
+        break;
+    }
+  }
+  return out;
+}
+
+int hexValue(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+std::string urlDecode(const std::string& text) {
+  std::string out;
+  out.reserve(text.size());
+  for (usize i = 0; i < text.size(); ++i) {
+    const char c = text[i];
+    if (c == '+') {
+      out += ' ';
+    } else if (c == '%' && i + 2U < text.size()) {
+      const int hi = hexValue(text[i + 1U]);
+      const int lo = hexValue(text[i + 2U]);
+      if (hi >= 0 && lo >= 0) {
+        out += static_cast<char>((hi << 4) | lo);
+        i += 2U;
+      } else {
+        out += c;
+      }
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+bool parseF64Token(const std::string& token, f64& out) {
+  if (token.empty()) return false;
+  try {
+    usize consumed = 0;
+    out = std::stod(token, &consumed);
+    return consumed == token.size();
+  } catch (...) {
+    return false;
+  }
+}
+
+// Parses "key=value&key=value..." into a map.
+std::map<std::string, std::string> parseQuery(const std::string& query) {
+  std::map<std::string, std::string> params;
+  usize begin = 0;
+  while (begin <= query.size()) {
+    const usize amp = query.find('&', begin);
+    const std::string pair = query.substr(begin, amp == std::string::npos ? std::string::npos : amp - begin);
+    const usize eq = pair.find('=');
+    if (eq != std::string::npos) {
+      params[urlDecode(pair.substr(0, eq))] = urlDecode(pair.substr(eq + 1U));
+    } else if (!pair.empty()) {
+      params[urlDecode(pair)] = "";
+    }
+    if (amp == std::string::npos) break;
+    begin = amp + 1U;
+  }
+  return params;
+}
+
+bool sendAll(SocketHandle socket, const std::string& data) {
+  usize sent = 0;
+  while (sent < data.size()) {
+    // Winsock takes an int length; the response is sent in bounded chunks so
+    // large branding/video payloads never overflow that parameter.
+    const usize chunk = std::min<usize>(data.size() - sent, 1024U * 1024U);
+#ifdef _WIN32
+    const int n = ::send(socket, data.data() + sent, static_cast<int>(chunk), 0);
+#else
+    const ssize_t n = ::send(socket, data.data() + sent, chunk, 0);
+#endif
+    if (n <= 0) return false;
+    sent += static_cast<usize>(n);
+  }
+  return true;
+}
+
+std::string httpResponse(const std::string& status, const std::string& contentType, const std::string& body) {
+  std::ostringstream out;
+  out << "HTTP/1.1 " << status << "\r\n";
+  out << "Content-Type: " << contentType << "\r\n";
+  out << "Content-Length: " << body.size() << "\r\n";
+  out << "Accept-Ranges: bytes\r\n";
+  out << "Cache-Control: no-store\r\n";
+  out << "Connection: close\r\n\r\n";
+  out << body;
+  return out.str();
+}
+
+// A partial response to a "Range: bytes=a-b" request. Browsers stream video
+// this way: without it a phone gets audio but a frozen picture, because it
+// never manages to pull the frames it wants.
+std::string httpRangeResponse(const std::string& contentType, const std::string& body, usize first, usize last) {
+  std::ostringstream out;
+  out << "HTTP/1.1 206 Partial Content\r\n";
+  out << "Content-Type: " << contentType << "\r\n";
+  out << "Content-Range: bytes " << first << '-' << last << '/' << body.size() << "\r\n";
+  out << "Content-Length: " << (last - first + 1U) << "\r\n";
+  out << "Accept-Ranges: bytes\r\n";
+  out << "Cache-Control: no-store\r\n";
+  out << "Connection: close\r\n\r\n";
+  out.write(body.data() + static_cast<std::ptrdiff_t>(first), static_cast<std::streamsize>(last - first + 1U));
+  return out.str();
+}
+
+// Uploads cap at 32 MB: big enough for any FBX, small enough that a
+// lying Content-Length cannot eat the phone's memory.
+constexpr usize kMaxUploadBytes = 32U * 1024U * 1024U;
+
+// Parses the Content-Length out of the raw request headers. False when no
+// usable header is there (no body announced) or the number is absurd.
+bool parseContentLength(const std::string& request, usize& length) {
+  for (const char* name : {"\r\nContent-Length:", "\r\ncontent-length:"}) {
+    const usize found = request.find(name);
+    if (found == std::string::npos) continue;
+    usize at = found + std::strlen(name);
+    while (at < request.size() && (request[at] == ' ' || request[at] == '\t')) ++at;
+    usize value = 0U;
+    bool any = false;
+    while (at < request.size() && request[at] >= '0' && request[at] <= '9') {
+      if (value > 4194303U) return false;  // absurd before it can overflow
+      value = value * 10U + static_cast<usize>(request[at] - '0');
+      ++at;
+      any = true;
+    }
+    if (!any) continue;  // malformed: try the next spelling
+    length = value;
+    return true;
+  }
+  return false;
+}
+
+// Parses "Range: bytes=<first>-<last>" out of the raw request. `last` is
+// inclusive and may be absent ("bytes=500-"), which means "to the end".
+// Returns false when there is no usable range header.
+bool parseRangeHeader(const std::string& request, usize size, usize& first, usize& last) {
+  if (size == 0U) return false;
+  usize headerAt = std::string::npos;
+  for (const char* name : {"\r\nRange:", "\r\nrange:"}) {
+    const usize found = request.find(name);
+    if (found != std::string::npos) {
+      headerAt = found + std::strlen(name);
+      break;
+    }
+  }
+  if (headerAt == std::string::npos) return false;
+  const usize lineEnd = request.find("\r\n", headerAt);
+  std::string value = request.substr(headerAt, lineEnd == std::string::npos ? std::string::npos : lineEnd - headerAt);
+  const usize equals = value.find('=');
+  if (equals == std::string::npos) return false;
+  if (value.find("bytes") == std::string::npos) return false;
+  value = value.substr(equals + 1U);
+  const usize dash = value.find('-');
+  if (dash == std::string::npos) return false;
+  const std::string firstText = value.substr(0, dash);
+  const std::string lastText = value.substr(dash + 1U);
+  // Multi-range ("0-1,5-9") is legal but nobody needs it here: serve whole.
+  if (lastText.find(',') != std::string::npos) return false;
+  try {
+    first = firstText.empty() ? 0U : static_cast<usize>(std::stoull(firstText));
+    last = lastText.empty() ? size - 1U : static_cast<usize>(std::stoull(lastText));
+  } catch (...) {
+    return false;
+  }
+  if (last >= size) last = size - 1U;
+  return first <= last;
+}
+
+std::string statusLine(int code) {
+  switch (code) {
+    case 200:
+      return "200 OK";
+    case 400:
+      return "400 Bad Request";
+    case 401:
+      return "401 Unauthorized";
+    case 404:
+      return "404 Not Found";
+    case 405:
+      return "405 Method Not Allowed";
+    case 413:
+      return "413 Content Too Large";
+    case 503:
+      return "503 Service Unavailable";
+    default:
+      return "500 Internal Server Error";
+  }
+}
+
+bool authorized(const std::string& request, const std::string& token) {
+  if (token.empty()) return true;
+  const std::string prefix = "\r\nAuthorization: Bearer ";
+  usize at = request.find(prefix);
+  if (at == std::string::npos) at = request.find("\r\nauthorization: Bearer ");
+  if (at != std::string::npos) {
+    at += prefix.size();
+    const usize end = request.find("\r\n", at);
+    if (request.substr(at, end == std::string::npos ? std::string::npos : end - at) == token) return true;
+  }
+
+  // The browser Workbench cannot set Authorization headers for its initial
+  // navigation. A short-lived-looking, HttpOnly cookie is established by
+  // opening /?token=... once; subsequent fetches use the normal cookie path.
+  const usize cookieAt = request.find("\r\nCookie:");
+  if (cookieAt != std::string::npos) {
+    const usize lineEnd = request.find("\r\n", cookieAt + 2U);
+    const usize cookieBegin = cookieAt + 9U;
+    const std::string cookies = request.substr(cookieBegin,
+                                               lineEnd == std::string::npos ? std::string::npos : lineEnd - cookieBegin);
+    const std::string expected = "kimia_token=" + token;
+    usize begin = 0U;
+    while (begin <= cookies.size()) {
+      const usize separator = cookies.find(';', begin);
+      std::string part = cookies.substr(begin, separator == std::string::npos ? std::string::npos : separator - begin);
+      while (!part.empty() && (part.front() == ' ' || part.front() == '\t')) part.erase(part.begin());
+      while (!part.empty() && (part.back() == ' ' || part.back() == '\t')) part.pop_back();
+      if (part == expected) return true;
+      if (separator == std::string::npos) break;
+      begin = separator + 1U;
+    }
+  }
+
+  std::istringstream firstLine(request);
+  std::string method;
+  std::string target;
+  firstLine >> method >> target;
+  const usize question = target.find('?');
+  if (question != std::string::npos) {
+    const std::map<std::string, std::string> params = parseQuery(target.substr(question + 1U));
+    const auto queryToken = params.find("token");
+    if (queryToken != params.end() && queryToken->second == token) return true;
+  }
+  return false;
+}
+
+std::string jsonEscape(const std::string& text) {
+  std::string out;
+  out.reserve(text.size() + 8U);
+  for (const char ch : text) {
+    const unsigned char c = static_cast<unsigned char>(ch);
+    switch (c) {
+      case '"':
+        out += "\\\"";
+        break;
+      case '\\':
+        out += "\\\\";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        if (c < 0x20U) {
+          char buffer[8];
+          std::snprintf(buffer, sizeof(buffer), "\\u%04x", static_cast<unsigned>(c));
+          out += buffer;
+        } else {
+          out += static_cast<char>(c);
+        }
+        break;
+    }
+  }
+  return out;
+}
+
+std::string menuJson(const Menu& menu) {
+  std::ostringstream out;
+  out << "{\"title\":\"" << jsonEscape(menu.title) << "\",\"holds\":[";
+  for (usize i = 0; i < menu.holds.size(); ++i) {
+    if (i > 0U) out << ',';
+    out << "[\"" << jsonEscape(menu.holds[i].label) << "\",\"" << jsonEscape(menu.holds[i].key) << "\"]";
+  }
+  out << "],\"taps\":[";
+  for (usize i = 0; i < menu.taps.size(); ++i) {
+    if (i > 0U) out << ',';
+    out << "[\"" << jsonEscape(menu.taps[i].label) << "\",\"" << jsonEscape(menu.taps[i].key) << "\"]";
+  }
+  out << "]}";
+  return out.str();
+}
+
+}  // namespace
+
+struct Server::Impl {
+  mutable std::mutex mutex;
+  std::vector<u8> frame;
+  bool hasFrame = false;
+  std::string stats;
+  std::map<std::string, bool> held;
+  std::vector<std::string> taps;
+  f64 lookX = 0.0;
+  f64 lookY = 0.0;
+  f64 zoom = 0.0;
+  std::string page;
+  std::map<std::string, std::string> extraPages;  // path -> html (stage 32)
+  Server::ApiHandler api;                         // /api/* handler, may be null
+  Server::UploadHandler upload;                 // POST body handler, may be null
+  Menu menu;
+  std::map<std::string, std::vector<u8>> sounds;
+  std::vector<u8> intro;    // the mp4 film, empty = no intro
+  std::vector<u8> logo;     // the png poster, empty = no logo
+  std::string lastSound;
+  u64 soundSequence = 0U;
+  SocketHandle listenFd = kInvalidSocket;
+  u16 boundPort = 0;
+  std::string bindAddress = "127.0.0.1";
+  std::string authToken;
+#ifdef _WIN32
+  bool winsockStarted = false;
+#endif
+  std::thread acceptThread;
+  std::atomic<bool> stopFlag{false};
+};
+
+namespace {
+
+void applyInputParams(Server::Impl* impl, const std::map<std::string, std::string>& params) {
+  std::lock_guard<std::mutex> lock(impl->mutex);
+  const auto key = params.find("key");
+  if (key != params.end() && !key->second.empty()) {
+    const auto down = params.find("down");
+    const bool isDown = down != params.end() && down->second == "1";
+    impl->held[key->second] = isDown;
+  }
+  const auto tap = params.find("tap");
+  if (tap != params.end() && !tap->second.empty()) impl->taps.push_back(tap->second);
+  const auto lookX = params.find("lookX");
+  if (lookX != params.end()) {
+    f64 value = 0.0;
+    if (parseF64Token(lookX->second, value)) impl->lookX += value;
+  }
+  const auto lookY = params.find("lookY");
+  if (lookY != params.end()) {
+    f64 value = 0.0;
+    if (parseF64Token(lookY->second, value)) impl->lookY += value;
+  }
+  const auto zoom = params.find("zoom");
+  if (zoom != params.end()) {
+    f64 value = 0.0;
+    if (parseF64Token(zoom->second, value)) impl->zoom += value;
+  }
+}
+
+void handleConnection(SocketHandle socket, Server::Impl* impl) {
+#ifdef _WIN32
+  const DWORD timeout = 3000U;
+  ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+  ::setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+  timeval timeout{};
+  timeout.tv_sec = 3;
+  timeout.tv_usec = 0;
+  ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  ::setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#endif
+
+  std::string request;
+  char buffer[2048];
+  for (;;) {
+#ifdef _WIN32
+    const int n = ::recv(socket, buffer, static_cast<int>(sizeof(buffer)), 0);
+#else
+    const ssize_t n = ::recv(socket, buffer, sizeof(buffer), 0);
+#endif
+    if (n <= 0) break;
+    request.append(buffer, static_cast<usize>(n));
+    if (request.find("\r\n\r\n") != std::string::npos) break;
+    if (request.size() > 16384U) break;
+  }
+
+  if (!authorized(request, impl->authToken)) {
+    sendAll(socket, httpResponse(statusLine(401), "text/plain; charset=utf-8", "unauthorized"));
+    closeSocket(socket);
+    return;
+  }
+
+  std::string method;
+  std::string target;
+  {
+    std::istringstream stream(request);
+    stream >> method >> target;
+  }
+  if (method.empty() || target.empty()) {
+    closeSocket(socket);
+    return;
+  }
+
+  std::string path = target;
+  std::string query;
+  const usize question = target.find('?');
+  if (question != std::string::npos) {
+    path = target.substr(0, question);
+    query = target.substr(question + 1U);
+  }
+
+  std::string response;
+  // --- File uploads: the one route with a POST body ---
+  if (path == "/api/asset/upload") {
+    if (method != "POST") {
+      response = httpResponse(statusLine(405), "application/json; charset=utf-8",
+                              "{\"error\":\"upload with POST\"}");
+    } else {
+      usize announced = 0U;
+      parseContentLength(request, announced);  // a missing header means an empty body
+      if (announced > kMaxUploadBytes) {
+        response = httpResponse(statusLine(413), "application/json; charset=utf-8",
+                                "{\"error\":\"file too large (32 MB max)\"}");
+      } else {
+        // The first read may already hold body bytes past the blank line.
+        std::string body;
+        const usize headerEnd = request.find("\r\n\r\n");
+        if (headerEnd != std::string::npos) body.assign(request, headerEnd + 4U, std::string::npos);
+        while (body.size() < announced) {
+          char chunk[8192];
+          const usize want = std::min(sizeof(chunk), announced - body.size());
+#ifdef _WIN32
+          const int n = ::recv(socket, chunk, static_cast<int>(want), 0);
+#else
+          const ssize_t n = ::recv(socket, chunk, want, 0);
+#endif
+          if (n <= 0) break;
+          body.append(chunk, static_cast<usize>(n));
+        }
+        if (body.size() != announced) {
+          response = httpResponse(statusLine(400), "application/json; charset=utf-8",
+                                  "{\"error\":\"upload cut short\"}");
+        } else {
+          // Same lock discipline as the API handler: copy it out, call it
+          // without the server lock, or the editor lock deadlocks it.
+          Server::UploadHandler handler;
+          {
+            std::lock_guard<std::mutex> lock(impl->mutex);
+            handler = impl->upload;
+          }
+          if (handler) {
+            const std::string answer = handler(path, parseQuery(query), body);
+            response = httpResponse(statusLine(200), "application/json; charset=utf-8", answer);
+          } else {
+            response = httpResponse(statusLine(404), "application/json; charset=utf-8",
+                                    "{\"error\":\"no upload handler\"}");
+          }
+        }
+      }
+    }
+  }
+  // --- Studio API and extra pages (stage 32) ---
+  if (response.empty() && path.rfind("/api/", 0) == 0) {
+    // Copy the handler out and release the lock BEFORE calling it. The
+    // handler takes the app's own lock, and the app takes the server's
+    // lock when it publishes a frame — holding both here would be a
+    // lock-order inversion, and it deadlocked the first time it ran.
+    Server::ApiHandler handler;
+    {
+      std::lock_guard<std::mutex> lock(impl->mutex);
+      handler = impl->api;
+    }
+    if (handler) {
+      const std::string body = handler(path, parseQuery(query));
+      response = httpResponse(statusLine(200), "application/json; charset=utf-8", body);
+    } else {
+      response = httpResponse(statusLine(404), "application/json; charset=utf-8", "{\"error\":\"no api\"}");
+    }
+  }
+  if (response.empty()) {
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    const auto extra = impl->extraPages.find(path);
+    if (extra != impl->extraPages.end()) {
+      response = httpResponse(statusLine(200), "text/html; charset=utf-8", extra->second);
+    }
+  }
+  if (!response.empty()) {
+    // Already answered by the API or an extra page.
+  } else if (path == "/") {
+    response = httpResponse(statusLine(200), "text/html; charset=utf-8", impl->page);
+  } else if (path == "/frame.jpg") {
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    if (impl->hasFrame) {
+      const std::string body(reinterpret_cast<const char*>(impl->frame.data()), impl->frame.size());
+      response = httpResponse(statusLine(200), "image/jpeg", body);
+    } else {
+      response = httpResponse(statusLine(503), "text/plain; charset=utf-8", "no frame yet");
+    }
+  } else if (path == "/stats") {
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    response = httpResponse(statusLine(200), "text/plain; charset=utf-8", impl->stats);
+  } else if (path == "/menu") {
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    response = httpResponse(statusLine(200), "application/json; charset=utf-8", menuJson(impl->menu));
+  } else if (path == "/input" && method == "POST") {
+    applyInputParams(impl, parseQuery(query));
+    response = httpResponse(statusLine(200), "text/plain; charset=utf-8", "ok");
+  } else if (path == "/sound") {
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    response = httpResponse(statusLine(200), "text/plain; charset=utf-8",
+                            std::to_string(impl->soundSequence) + " " + impl->lastSound);
+  } else if (path == "/intro.mp4" || path == "/logo.png") {
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    const bool wantsFilm = path == "/intro.mp4";
+    const std::vector<u8>& bytes = wantsFilm ? impl->intro : impl->logo;
+    if (!bytes.empty()) {
+      const std::string body(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+      const char* type = wantsFilm ? "video/mp4" : "image/png";
+      usize first = 0U;
+      usize last = 0U;
+      if (parseRangeHeader(request, body.size(), first, last)) {
+        response = httpRangeResponse(type, body, first, last);
+      } else {
+        response = httpResponse(statusLine(200), type, body);
+      }
+    } else {
+      response = httpResponse(statusLine(404), "text/plain; charset=utf-8", "no branding");
+    }
+  } else if (path.rfind("/sfx/", 0) == 0) {
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    const auto found = impl->sounds.find(path.substr(5U));
+    if (found != impl->sounds.end()) {
+      const std::string body(reinterpret_cast<const char*>(found->second.data()), found->second.size());
+      response = httpResponse(statusLine(200), "audio/wav", body);
+    } else {
+      response = httpResponse(statusLine(404), "text/plain; charset=utf-8", "no such sound");
+    }
+  } else {
+    response = httpResponse(statusLine(404), "text/plain; charset=utf-8", "not found");
+  }
+  // A browser can bootstrap the protected Workbench with /?token=... once;
+  // move the secret into an HttpOnly cookie and keep it out of later URLs.
+  if (!impl->authToken.empty()) {
+    std::istringstream firstLine(request);
+    std::string methodForCookie;
+    std::string targetForCookie;
+    firstLine >> methodForCookie >> targetForCookie;
+    const usize questionForCookie = targetForCookie.find('?');
+    if (questionForCookie != std::string::npos) {
+      const std::map<std::string, std::string> params = parseQuery(targetForCookie.substr(questionForCookie + 1U));
+      const auto queryToken = params.find("token");
+      const bool safe = impl->authToken.find_first_of("\r\n;") == std::string::npos;
+      if (safe && queryToken != params.end() && queryToken->second == impl->authToken) {
+        const usize headerEnd = response.find("\r\n\r\n");
+        if (headerEnd != std::string::npos) {
+          response.insert(headerEnd, "\r\nSet-Cookie: kimia_token=" + impl->authToken +
+                                      "; Path=/; HttpOnly; SameSite=Strict\r\n");
+        }
+      }
+    }
+  }
+  sendAll(socket, response);
+  closeSocket(socket);
+}
+
+void acceptLoop(Server::Impl* impl) {
+  while (!impl->stopFlag.load()) {
+    sockaddr_in address{};
+    SocketLength addressLength = static_cast<SocketLength>(sizeof(address));
+    const SocketHandle client = ::accept(impl->listenFd, reinterpret_cast<sockaddr*>(&address), &addressLength);
+    if (socketFailed(client)) {
+      if (impl->stopFlag.load()) break;
+      continue;
+    }
+    std::thread(handleConnection, client, impl).detach();
+  }
+}
+
+}  // namespace
+
+Server::Server() : impl_(new Impl()) {}
+
+Server::~Server() { stop(); }
+
+bool Server::start(u16 port, const std::string& pageHtml) {
+  return start(port, pageHtml, ServerOptions{});
+}
+
+bool Server::start(u16 port, const std::string& pageHtml, const ServerOptions& options) {
+  stop();
+#ifdef _WIN32
+  if (!ensureWinsock()) return false;
+  impl_->winsockStarted = true;
+#endif
+  impl_->page = pageHtml;
+  impl_->bindAddress = options.bindAddress.empty() ? "127.0.0.1" : options.bindAddress;
+  impl_->authToken = options.authToken;
+  if (impl_->bindAddress != "127.0.0.1" && impl_->authToken.empty()) {
+    // A non-loopback editor API without authentication is an accidental LAN
+    // file/project control surface, not a valid release configuration.
+#ifdef _WIN32
+    if (impl_->winsockStarted) {
+      ::WSACleanup();
+      impl_->winsockStarted = false;
+    }
+#endif
+    return false;
+  }
+  const SocketHandle socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (socketFailed(socket)) {
+#ifdef _WIN32
+    ::WSACleanup();
+    impl_->winsockStarted = false;
+#endif
+    return false;
+  }
+  int reuse = 1;
+#ifdef _WIN32
+  ::setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+#else
+  ::setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+#endif
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  if (::inet_pton(AF_INET, impl_->bindAddress.c_str(), &address.sin_addr) != 1) {
+    closeSocket(socket);
+#ifdef _WIN32
+    ::WSACleanup();
+    impl_->winsockStarted = false;
+#endif
+    return false;
+  }
+  address.sin_port = htons(port);
+  if (::bind(socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+    closeSocket(socket);
+#ifdef _WIN32
+    ::WSACleanup();
+    impl_->winsockStarted = false;
+#endif
+    return false;
+  }
+  if (::listen(socket, 16) != 0) {
+    closeSocket(socket);
+#ifdef _WIN32
+    ::WSACleanup();
+    impl_->winsockStarted = false;
+#endif
+    return false;
+  }
+  sockaddr_in bound{};
+  SocketLength boundLength = static_cast<SocketLength>(sizeof(bound));
+  u16 actualPort = port;
+  if (::getsockname(socket, reinterpret_cast<sockaddr*>(&bound), &boundLength) == 0) {
+    actualPort = ntohs(bound.sin_port);
+  }
+  impl_->listenFd = socket;
+  impl_->boundPort = actualPort;
+  impl_->stopFlag.store(false);
+  impl_->acceptThread = std::thread(acceptLoop, impl_.get());
+  return true;
+}
+
+u16 Server::port() const { return impl_->boundPort; }
+
+bool Server::running() const { return !socketFailed(impl_->listenFd); }
+
+void Server::stop() {
+  impl_->stopFlag.store(true);
+  if (!socketFailed(impl_->listenFd)) {
+    shutdownSocket(impl_->listenFd);
+    closeSocket(impl_->listenFd);
+    impl_->listenFd = kInvalidSocket;
+  }
+  if (impl_->acceptThread.joinable()) impl_->acceptThread.join();
+  impl_->boundPort = 0;
+#ifdef _WIN32
+  if (impl_->winsockStarted) {
+    ::WSACleanup();
+    impl_->winsockStarted = false;
+  }
+#endif
+  // Let in-flight handlers finish (per the engine convention).
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+}
+
+void Server::publishFrame(std::vector<u8> jpgBytes, const std::string& statsLine) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->frame = std::move(jpgBytes);
+  impl_->hasFrame = true;
+  impl_->stats = statsLine;
+}
+
+void Server::setMenu(const Menu& menu) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->menu = menu;
+}
+
+void Server::setIntro(std::vector<u8> mp4Bytes, std::vector<u8> logoPngBytes) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->intro = std::move(mp4Bytes);
+  impl_->logo = std::move(logoPngBytes);
+}
+
+bool Server::hasIntro() const {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  return !impl_->intro.empty();
+}
+
+void Server::setApiHandler(ApiHandler handler) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->api = std::move(handler);
+}
+
+void Server::setUploadHandler(UploadHandler handler) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->upload = std::move(handler);
+}
+
+void Server::setPage(const std::string& path, const std::string& html) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->extraPages[path] = html;
+}
+
+void Server::registerSound(const std::string& name, std::vector<u8> wavBytes) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->sounds[name] = std::move(wavBytes);
+}
+
+void Server::playSound(const std::string& name) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  if (impl_->sounds.find(name) == impl_->sounds.end()) return;  // unknown cue: silently ignored
+  impl_->lastSound = name;
+  ++impl_->soundSequence;
+}
+
+u64 Server::soundSequence() const {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  return impl_->soundSequence;
+}
+
+DrainedInput Server::drain() {
+  DrainedInput out;
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  out.held = impl_->held;
+  out.taps = std::move(impl_->taps);
+  impl_->taps.clear();
+  out.lookX = impl_->lookX;
+  out.lookY = impl_->lookY;
+  out.zoom = impl_->zoom;
+  impl_->lookX = 0.0;
+  impl_->lookY = 0.0;
+  impl_->zoom = 0.0;
+  return out;
+}
+
+std::string makePageHtml(const std::string& title, const std::vector<PadButton>& padButtons,
+                         const std::string& keymapJs, const std::string& hint, bool showEditorLink) {
+  std::ostringstream out;
+  out << "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n";
+  out << "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\">\n";
+  out << "<title>" << htmlEscape(title) << "</title>\n<style>\n";
+  out << "body{background:#101014;color:#e8e8ec;font-family:system-ui,sans-serif;margin:0;padding:12px;"
+         "touch-action:manipulation;user-select:none;-webkit-user-select:none}\n";
+  out << "h1{font-size:20px;margin:4px 0}\n.hint{color:#9a9aa5;font-size:13px;margin:4px 0 10px}\n";
+  out << "#frame{width:100%;max-width:720px;display:block;background:#000;border-radius:8px}\n";
+  out << "#stats{font-family:monospace;font-size:12px;color:#7fd47f;margin:8px 0;white-space:pre-wrap}\n";
+  out << "#menutitle{font-size:16px;font-weight:600;margin:10px 0 4px}\n";
+  out << "#pad,#staticpad{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0;max-width:720px}\n";
+  out << ".btn{min-width:52px;min-height:44px;padding:8px 12px;font-size:16px;border:1px solid #3a3a44;"
+         "border-radius:10px;background:#23232c;color:#e8e8ec;text-align:center;cursor:pointer}\n";
+  out << ".btn:active{background:#3d4a7a}\n";
+  out << "#look{width:100%;max-width:720px;height:120px;border:1px dashed #3a3a44;border-radius:10px;"
+         "margin:10px 0;display:flex;align-items:center;justify-content:center;color:#7a7a88;font-size:14px;"
+         "touch-action:none}\n";
+  // The intro splash: covers everything until the film ends or is skipped.
+  out << "#splash{position:fixed;inset:0;background:#000;display:none;align-items:center;"
+         "justify-content:center;z-index:99;flex-direction:column}\n";
+  out << "#splash video{width:100%;height:100%;object-fit:contain;background:#000}\n";
+  out << "#skip{position:fixed;right:16px;bottom:16px;z-index:100;padding:10px 18px;font-size:15px;"
+         "border:1px solid #55555f;border-radius:10px;background:rgba(20,20,26,.85);color:#e8e8ec;"
+         "cursor:pointer}\n";
+  out << "#benchlink{display:inline-block;margin:0 0 10px;padding:7px 16px;"
+         "background:#22272e;color:#d9a441;border:1px solid #333b45;border-radius:6px;"
+         "text-decoration:none;font-size:14px}\n";
+  out << "#benchlink:hover{border-color:#d9a441}\n";
+  out << "</style>\n</head>\n<body>\n";
+  // No poster attribute on purpose: a still poster frame is impossible to
+  // tell apart from a video that failed to decode ("it is only a picture").
+  // With no poster, a broken decode shows black and the watchdog below
+  // gives up quickly instead of leaving a frozen image on screen.
+  out << "<div id=\"splash\"><video id=\"introfilm\" playsinline autoplay muted preload=\"auto\">"
+         "<source src=\"/intro.mp4\" type=\"video/mp4\"></video>"
+         "<div id=\"skip\">رد کردن / SKIP</div></div>\n";
+  out << "<h1>" << htmlEscape(title) << "</h1>\n";
+  // A way IN to the editor. Without this the Workbench existed but there
+  // was no route to it from the game page, so the only way to find it was
+  // to already know the address — which is no use to anybody.
+  if (showEditorLink) {
+    out << "<a id=\"benchlink\" href=\"/bench\">&#9881; Editor &mdash; ویرایشگر</a>\n";
+  }
+  if (!hint.empty()) out << "<div class=\"hint\">" << htmlEscape(hint) << "</div>\n";
+  out << "<img id=\"frame\" alt=\"engine frame\">\n<div id=\"stats\">waiting for first frame...</div>\n";
+  out << "<div id=\"menutitle\"></div>\n";
+  out << "<div id=\"pad\"></div>\n";  // dynamic menu buttons (from GET /menu)
+  out << "<div id=\"staticpad\">\n";
+  for (const PadButton& button : padButtons) {
+    out << "<div class=\"btn\" data-key=\"" << htmlEscape(button.key) << "\" data-hold=\""
+        << (button.hold ? "1" : "0") << "\">" << htmlEscape(button.label) << "</div>\n";
+  }
+  out << "</div>\n";
+  out << "<div id=\"look\">drag here to look around</div>\n";
+  out << "<script>\n";
+  out << "function post(q){fetch('/input?'+q,{method:'POST'}).catch(function(){});}\n";
+  out << "function bindPad(el){\n";
+  out << "  el.addEventListener('pointerdown',function(e){\n";
+  out << "    var b=e.target.closest('.btn');if(!b)return;\n";
+  out << "    e.preventDefault();\n";
+  out << "    if(b.getAttribute('data-hold')==='1'){post('key='+encodeURIComponent(b.getAttribute('data-key'))+'&down=1');}\n";
+  out << "  });\n";
+  out << "  el.addEventListener('pointerup',function(e){\n";
+  out << "    var b=e.target.closest('.btn');if(!b)return;\n";
+  out << "    var k=encodeURIComponent(b.getAttribute('data-key'));\n";
+  out << "    if(b.getAttribute('data-hold')==='1'){post('key='+k+'&down=0');}\n";
+  out << "    else{post('tap='+k);}\n";
+  out << "  });\n";
+  out << "  el.addEventListener('pointercancel',function(e){\n";
+  out << "    var b=e.target.closest('.btn');if(!b)return;\n";
+  out << "    if(b.getAttribute('data-hold')==='1'){post('key='+encodeURIComponent(b.getAttribute('data-key'))+'&down=0');}\n";
+  out << "  });\n";
+  out << "}\n";
+  out << "bindPad(document.getElementById('staticpad'));\n";
+  out << "bindPad(document.getElementById('pad'));\n";
+  out << "function escAttr(s){return String(s).replace(/&/g,'&amp;').replace(/\"/g,'&quot;');}\n";
+  out << "var lastMenu='';\n";
+  out << "function showMenu(){\n";
+  out << "  fetch('/menu').then(function(r){return r.json();}).then(function(m){\n";
+  out << "    var title=document.getElementById('menutitle');\n";
+  out << "    var pad=document.getElementById('pad');\n";
+  out << "    var staticPad=document.getElementById('staticpad');\n";
+  out << "    if(m&&m.title){\n";
+  out << "      title.textContent=m.title;\n";
+  out << "      title.style.display='block';\n";
+  out << "      var html='';\n";
+  out << "      var i;\n";
+  out << "      for(i=0;i<m.holds.length;i++){\n";
+  out << "        html+='<div class=\"btn\" data-key=\"'+escAttr(m.holds[i][1])+'\" data-hold=\"1\">'+escAttr(m.holds[i][0])+'</div>';\n";
+  out << "      }\n";
+  out << "      for(i=0;i<m.taps.length;i++){\n";
+  out << "        html+='<div class=\"btn\" data-key=\"'+escAttr(m.taps[i][1])+'\" data-hold=\"0\">'+escAttr(m.taps[i][0])+'</div>';\n";
+  out << "      }\n";
+  out << "      if(html!==lastMenu){pad.innerHTML=html;lastMenu=html;}\n";
+  out << "      pad.style.display='flex';\n";
+  out << "      staticPad.style.display='none';\n";
+  out << "    }else{\n";
+  out << "      title.style.display='none';\n";
+  out << "      pad.style.display='none';\n";
+  out << "      staticPad.style.display='flex';\n";
+  out << "    }\n";
+  out << "  }).catch(function(){});\n";
+  out << "}\n";
+  out << "setInterval(showMenu,300);\n";
+  out << "showMenu();\n";
+  out << "var look=document.getElementById('look');\n";
+  out << "var dragging=false,lastX=0,lastY=0;\n";
+  out << "look.addEventListener('pointerdown',function(e){dragging=true;lastX=e.clientX;lastY=e.clientY;"
+         "look.setPointerCapture(e.pointerId);});\n";
+  out << "look.addEventListener('pointermove',function(e){if(!dragging)return;\n";
+  out << "  var dx=e.clientX-lastX,dy=e.clientY-lastY;lastX=e.clientX;lastY=e.clientY;\n";
+  out << "  post('lookX='+dx+'&lookY='+dy);\n";
+  out << "});\n";
+  out << "look.addEventListener('pointerup',function(){dragging=false;});\n";
+  out << "var img=document.getElementById('frame');\n";
+  out << "setInterval(function(){img.src='/frame.jpg?t='+Date.now();},100);\n";
+  // Intro film: shown once per tab, and only when /intro.mp4 really exists.
+  // Any failure (404, codec, autoplay policy) just hides it and starts the
+  // game, so the engine never gets stuck behind its own logo.
+  out << "(function(){\n";
+  out << "  var splash=document.getElementById('splash');\n";
+  out << "  var film=document.getElementById('introfilm');\n";
+  out << "  var skip=document.getElementById('skip');\n";
+  out << "  function done(){splash.style.display='none';try{film.pause();}catch(e){}\n";
+  out << "    try{sessionStorage.setItem('kimiaIntroSeen','1');}catch(e){}}\n";
+  out << "  if(sessionStorage.getItem('kimiaIntroSeen')==='1'){return;}\n";
+  out << "  fetch('/intro.mp4',{method:'HEAD'}).then(function(r){\n";
+  out << "    if(!r.ok){return;}\n";
+  out << "    splash.style.display='flex';\n";
+  out << "    film.addEventListener('ended',done);\n";
+  out << "    film.addEventListener('error',done);\n";
+  out << "    skip.addEventListener('click',done);\n";
+  out << "    splash.addEventListener('click',function(e){if(e.target!==skip){film.muted=false;"
+         "film.play().catch(function(){});}});\n";
+  out << "    film.play().catch(function(){});\n";
+  // Watchdog: some phones accept the file but never actually decode it —
+  // the picture freezes while the sound plays. If the clock has not moved
+  // after 3 seconds, give up and start the game rather than showing the
+  // user a still frame.
+  out << "    var last=-1;\n";
+  out << "    var stalls=0;\n";
+  out << "    var watch=setInterval(function(){\n";
+  out << "      if(splash.style.display==='none'){clearInterval(watch);return;}\n";
+  out << "      var now=film.currentTime;\n";
+  out << "      if(now>last+0.02){last=now;stalls=0;return;}\n";
+  out << "      if(++stalls>=6){clearInterval(watch);done();}\n";
+  out << "    },500);\n";
+  out << "  }).catch(function(){});\n";
+  out << "})();\n";
+  out << "setInterval(function(){fetch('/stats').then(function(r){return r.text();}).then(function(t){"
+         "document.getElementById('stats').textContent=t;}).catch(function(){});},500);\n";
+  // Sound cues: /sound = "<seq> <name>"; a new seq plays /sfx/<name>. Browsers
+  // only play after a user gesture, so cues before the first touch are skipped.
+  out << "var sfxSeq=-1,sfxCache={},sfxArmed=false;\n";
+  out << "function armSfx(){sfxArmed=true;}\n";
+  out << "window.addEventListener('pointerdown',armSfx,{once:true});\n";
+  out << "window.addEventListener('keydown',armSfx,{once:true});\n";
+  out << "function playSfx(name){if(!sfxArmed)return;var a=sfxCache[name];"
+         "if(!a){a=new Audio('/sfx/'+name);sfxCache[name]=a;}"
+         "try{a.currentTime=0;a.play().catch(function(){});}catch(e){}}\n";
+  out << "setInterval(function(){fetch('/sound').then(function(r){return r.text();}).then(function(t){\n";
+  out << "  var sp=t.indexOf(' ');if(sp<0)return;var seq=parseInt(t.slice(0,sp),10);var name=t.slice(sp+1);\n";
+  out << "  if(sfxSeq<0){sfxSeq=seq;return;}\n";  // first poll: sync, do not replay old cues
+  out << "  if(seq!==sfxSeq){sfxSeq=seq;if(name)playSfx(name);}\n";
+  out << "}).catch(function(){});},150);\n";
+  if (!keymapJs.empty()) out << keymapJs << '\n';
+  out << "</script>\n</body>\n</html>\n";
+  return out.str();
+}
+
+namespace {
+
+bool readWholeFile(const std::string& path, std::vector<u8>& out) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) return false;
+  out.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+  return !out.empty();
+}
+
+}  // namespace
+
+bool loadIntroFrom(Server& server, const std::string& folder) {
+  // The same film may sit next to the binary (a release package) or two
+  // folders up (a build tree), so try the obvious places in order.
+  // "-" is the explicit «no intro»: search nothing, find nothing.
+  if (folder == "-") return false;
+  // A folder the caller named is authoritative: if the film is not there,
+  // that is the answer. Only the default (empty) search walks the usual
+  // places, so a build tree and a release package both just work.
+  std::vector<std::string> roots;
+  if (!folder.empty()) {
+    roots.push_back(folder);
+  } else {
+    roots.push_back("Branding");
+    roots.push_back("../Branding");
+    roots.push_back("../../Branding");
+  }
+  for (const std::string& root : roots) {
+    std::vector<u8> film;
+    if (!readWholeFile(root + "/kimia-intro.mp4", film)) continue;
+    std::vector<u8> logo;
+    readWholeFile(root + "/kimia-logo.png", logo);  // optional poster
+    server.setIntro(std::move(film), std::move(logo));
+    return true;
+  }
+  return false;
+}
+
+}  // namespace web
+}  // namespace kimia

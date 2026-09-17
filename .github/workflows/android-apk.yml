@@ -1,0 +1,122 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'arena/01a080a4-ai-codespace'
+      - 'arena/01a0a585-kimia-engine'
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Android SDK
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_on: error
+          command: |
+            set -e
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless
+            sudo update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java
+            sudo update-alternatives --set javac /usr/lib/jvm/java-17-openjdk-amd64/bin/javac
+            export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+            export ANDROID_HOME=$RUNNER_TEMP/android-sdk
+            export ANDROID_SDK_ROOT=$ANDROID_HOME
+            mkdir -p "$ANDROID_HOME/cmdline-tools"
+            cd "$ANDROID_HOME/cmdline-tools"
+            if [ ! -d latest ]; then
+              curl -fsSL -o cli.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+              unzip -q cli.zip
+              mv cmdline-tools latest
+            fi
+            export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+            yes | sdkmanager --licenses >/dev/null
+            sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264" "cmake;3.22.1"
+            echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+            echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+
+      - name: Set up Gradle 8.7 directly (skip the cache layer that fails)
+        run: |
+          set -e
+          GRADLE_VERSION=8.7
+          if [ ! -d "/opt/gradle/gradle-${GRADLE_VERSION}" ]; then
+            echo "Downloading Gradle ${GRADLE_VERSION}..."
+            mkdir -p /opt/gradle
+            cd /tmp
+            curl -fsSL -o gradle.zip               "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"
+            unzip -q gradle.zip -d /opt/gradle
+            rm gradle.zip
+          fi
+          export PATH="/opt/gradle/gradle-${GRADLE_VERSION}/bin:$PATH"
+          echo "/opt/gradle/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
+          gradle --version
+
+      - name: Build debug APK
+        working-directory: Android
+        run: |
+          set -x
+          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/build.log
+          echo "EXIT=$?"
+        continue-on-error: true
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: /tmp/build.log
+
+      - name: Post log tail to summary
+        if: always()
+        run: |
+          echo "## Build log (last 80 lines)" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          tail -80 /tmp/build.log >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post log to PR comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LOG_TAIL=$(grep -nE "error|FAIL|Error|fatal|cannot|undefined|undeclared" /tmp/build.log 2>/dev/null | head -c 8000)
+          {
+            echo "### Build log (run ${{ github.run_id }})"
+            echo ""
+            echo "Commit: ${{ github.sha }}"
+            echo "Branch: ${{ github.ref }}"
+            echo ""
+            echo "\`\`\`"
+            echo "${LOG_TAIL}"
+            echo "\`\`\`"
+          } > /tmp/comment.md
+          cat /tmp/comment.md
+          echo "---"
+          echo "Posting..."
+          curl -sL -X POST             -H "Authorization: Bearer ${GH_TOKEN}"             -H "Content-Type: application/json"             -d "$(jq -nc --rawfile body /tmp/comment.md                   '{body: $body}')"             "https://api.github.com/repos/javadxpro/KIMIA-ENGINE/issues/6/comments"             || echo "curl failed"
+        continue-on-error: true
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kimia-world-debug-apk
+          path: Android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

@@ -1,0 +1,135 @@
+#pragma once
+
+#include <kimia/Types.h>
+
+#include <functional>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace kimia {
+namespace web {
+
+struct PadButton {
+  std::string label;
+  std::string key;
+  bool hold = false;  // true: level (down/up); false: edge (tap)
+};
+
+// A dynamic menu served at GET /menu as JSON. The control page polls it and
+// rebuilds its buttons, which is how the option-driven editor presents
+// questions. An empty title hides the menu (static pad shown instead).
+struct Menu {
+  std::string title;
+  std::vector<PadButton> holds;
+  std::vector<PadButton> taps;
+};
+
+// Input drained from the web page. `held` is LEVEL state (server keeps it),
+// `taps`/`lookX`/`lookY`/`zoom` are EDGES cleared by drain().
+struct DrainedInput {
+  std::map<std::string, bool> held;
+  std::vector<std::string> taps;
+  f64 lookX = 0.0;
+  f64 lookY = 0.0;
+  f64 zoom = 0.0;
+};
+
+// Generates the touch-pad control page served on "/".
+// `showEditorLink` is false for a published game: the person you gave it
+// to is a player, and a route into the builder is a way to break it.
+std::string makePageHtml(const std::string& title, const std::vector<PadButton>& padButtons,
+                         const std::string& keymapJs, const std::string& hint,
+                         bool showEditorLink = true);
+
+struct ServerOptions {
+  // Loopback is intentional: the editor API can mutate files and a project, so
+  // it must not be exposed to a LAN by default. Use 0.0.0.0 only together with
+  // an auth token and an explicit firewall rule. Server::start rejects a
+  // non-loopback bind with an empty token.
+  std::string bindAddress = "127.0.0.1";
+  std::string authToken;
+};
+
+// Tiny HTTP server on native sockets + threads (Winsock on Windows, POSIX
+// sockets elsewhere; no external HTTP library). Routes:
+//   GET  /          -> 200 text/html (the control page)
+//   GET  /frame.jpg -> 200 image/jpeg (latest published frame) or 503 if none
+//   GET  /stats     -> 200 text/plain (last stats line)
+//   GET  /menu      -> 200 application/json (the dynamic menu; empty by default)
+//   POST /input?key=<k>&down=0|1&tap=<k>&lookX=<dx>&lookY=<dy>&zoom=<dz> -> 200
+//   GET  /sound     -> 200 text/plain "<seq> <name>" (the latest sound cue; seq
+//                      grows by one per playSound, so the page plays each cue once)
+//   GET  /sfx/<n>   -> 200 audio/wav (a registered sound) or 404
+//   GET  /intro.mp4 -> 200 video/mp4 (the intro film) or 404 if none was set
+//   GET  /logo.png  -> 200 image/png (the splash logo) or 404 if none was set
+//   anything else   -> 404
+class Server {
+public:
+  struct Impl;  // opaque; definition lives in the .cpp
+
+  Server();
+  ~Server();
+  Server(const Server&) = delete;
+  Server& operator=(const Server&) = delete;
+
+  // Starts the accept thread. The two-argument overload binds loopback only.
+  // `port == 0` asks the OS for an ephemeral port.
+  bool start(u16 port, const std::string& pageHtml);
+  bool start(u16 port, const std::string& pageHtml, const ServerOptions& options);
+  u16 port() const;
+  bool running() const;
+  void stop();
+
+  void publishFrame(std::vector<u8> jpgBytes, const std::string& statsLine);
+  void setMenu(const Menu& menu);
+  DrainedInput drain();
+
+  // Sound: register WAV bytes under a name once, then cue it by name. The
+  // page polls /sound and plays /sfx/<name> when the sequence number moves.
+  // Branding: the intro film plays full-screen over the page once, before
+  // the first frame, and the logo is the poster shown while it loads. Both
+  // are optional — without them the page opens straight into the game, so a
+  // build with no branding files behaves exactly as it always did.
+  void setIntro(std::vector<u8> mp4Bytes, std::vector<u8> logoPngBytes);
+  bool hasIntro() const;
+
+  // --- Studio API (stage 32) ---
+  //
+  // The editor page needs to ask the engine real questions ("what is in
+  // this world?") and give it real commands ("make that object solid").
+  // The server stays dumb: it hands the path and the query to a handler
+  // the app installs, and sends whatever JSON comes back. That keeps every
+  // decision about the world in the World layer, where it is testable.
+  //
+  // Called on the accept thread, so the handler must do its own locking.
+  using ApiHandler = std::function<std::string(const std::string& path,
+                                               const std::map<std::string, std::string>& params)>;
+  void setApiHandler(ApiHandler handler);
+  // File uploads (the Project panel's Upload button). Like the API handler
+  // but with the POST body attached: the server reads at most 32 MB of body
+  // and hands it over. Called on the accept thread, so the handler must do
+  // its own locking.
+  using UploadHandler = std::function<std::string(const std::string& path,
+                                                  const std::map<std::string, std::string>& params,
+                                                  const std::string& body)>;
+  void setUploadHandler(UploadHandler handler);
+  // Extra pages served alongside the main one, e.g. "/studio".
+  void setPage(const std::string& path, const std::string& html);
+
+  void registerSound(const std::string& name, std::vector<u8> wavBytes);
+  void playSound(const std::string& name);
+  u64 soundSequence() const;
+
+private:
+  std::unique_ptr<Impl> impl_;
+};
+// Reads the branding files (kimia-intro.mp4 / kimia-logo.png) from a folder
+// and hands them to the server. Looks in `folder`, then ./Branding, then
+// ../Branding, so it works from a build tree and from a release package
+// alike. Returns false when nothing was found — which is not an error.
+bool loadIntroFrom(Server& server, const std::string& folder);
+
+}  // namespace web
+}  // namespace kimia

@@ -1,0 +1,1099 @@
+#include <kimia/AssetPipeline.h>
+#include <kimia/World.h>
+
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <sstream>
+
+namespace kimia {
+
+namespace {
+
+// Human-readable numbers for the inspector title («x 2.00» etc.).
+std::string format1f(f64 value) {
+  char buffer[32];
+  std::snprintf(buffer, sizeof(buffer), "%.2f", value);
+  return std::string(buffer);
+}
+
+constexpr f64 kBlockColor = 0.62;
+constexpr f64 kWallColorR = 0.7;
+constexpr f64 kWallColorG = 0.68;
+constexpr f64 kWallColorB = 0.62;
+constexpr f64 kCrateColorR = 0.55;  // wooden crate brown
+constexpr f64 kCrateColorG = 0.40;
+constexpr f64 kCrateColorB = 0.25;
+constexpr f64 kHoleColor = 0.05;    // the cup reads as a dark disc in the ground
+
+u32 nameNumber(const std::string& name, const char* prefix) {
+  const usize prefixLength = std::strlen(prefix);
+  if (name.size() <= prefixLength || name.compare(0, prefixLength, prefix) != 0) return 0U;
+  u32 number = 0U;
+  for (usize i = prefixLength; i < name.size(); ++i) {
+    const char c = name[i];
+    if (c < '0' || c > '9') return 0U;
+    number = number * 10U + static_cast<u32>(c - '0');
+  }
+  return number;
+}
+
+u32 nextNumber(const Scene& scene, const char* prefix) {
+  u32 highest = 0U;
+  scene.forEach([&highest, prefix](EntityHandle, const EntityData& entity) {
+    highest = std::max(highest, nameNumber(entity.name, prefix));
+  });
+  return highest + 1U;
+}
+
+bool hasExtension(const std::string& name, const char* ext) {
+  const usize extLength = std::strlen(ext);
+  if (name.size() <= extLength) return false;
+  for (usize i = 0; i < extLength; ++i) {
+    char c = name[name.size() - extLength + i];
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    if (c != ext[i]) return false;
+  }
+  return true;
+}
+
+// The four reference games (golf / street / grass / battleground) stay in
+// the engine — they are the capability the engine provides and they drive
+// most of the test suite — but they are NOT shown in the «new world» menu.
+// A user starts from the empty project (sandbox) or a *.kimiaprofile file
+// of their own, like opening an empty scene in a general-purpose editor.
+bool isReferenceGame(const std::string& name) {
+  return name == "golf" || name == "street" || name == "grass" || name == "battleground";
+}
+
+}  // namespace
+
+void WorldEditor::setProfileDirectory(const std::string& dir) {
+  profileDir_ = dir;
+  refreshProfiles();
+}
+
+void WorldEditor::refreshProfiles() {
+  profiles_ = loadProfiles(profileDir_);
+  menuProfileIndex_.clear();
+  for (usize i = 0; i < profiles_.size(); ++i) {
+    if (!isReferenceGame(profiles_[i].name)) menuProfileIndex_.push_back(i);
+  }
+  if (profilePage_ * 5U >= menuProfileIndex_.size()) profilePage_ = 0U;
+}
+
+void WorldEditor::refreshImportFiles() {
+  importFiles_.clear();
+  namespace fs = std::filesystem;
+  std::error_code error;
+  const fs::path root(importDir_);
+  fs::recursive_directory_iterator iterator(
+      root, fs::directory_options::skip_permission_denied, error);
+  if (!error) {
+    const fs::recursive_directory_iterator end;
+    for (; iterator != end; iterator.increment(error)) {
+      if (error) {
+        error.clear();
+        continue;
+      }
+      const fs::directory_entry& entry = *iterator;
+      std::error_code entryError;
+      if (!entry.is_regular_file(entryError) || entryError) continue;
+      const std::string name = entry.path().filename().string();
+      if (!hasExtension(name, ".obj") && !hasExtension(name, ".fbx")) continue;
+      std::error_code relativeError;
+      const fs::path relative = fs::relative(entry.path(), root, relativeError);
+      importFiles_.push_back(relativeError ? entry.path().filename().generic_string()
+                                            : relative.generic_string());
+    }
+  }
+  std::sort(importFiles_.begin(), importFiles_.end());
+  if (importPage_ * 5U >= importFiles_.size()) importPage_ = 0U;
+}
+
+// --- Management accessors ---
+
+const EntityData* WorldEditor::selectedEntity() const {
+  if (managedIndex_ >= managed_.size()) return nullptr;
+  return world_.scene.get(managed_[managedIndex_]);
+}
+
+std::string WorldEditor::managedName() const {
+  const EntityData* entity = selectedEntity();
+  return entity != nullptr ? entity->name : std::string{};
+}
+
+std::string WorldEditor::managedKindName() const {
+  const EntityData* entity = selectedEntity();
+  if (entity == nullptr) return std::string{};
+  switch (objectKindForName(entity->name)) {
+    case ObjectKind::Player:
+      return "player";
+    case ObjectKind::Ball:
+      return "ball";
+    case ObjectKind::Block:
+      return "block";
+    case ObjectKind::Wall:
+      return "wall";
+    case ObjectKind::Goal:
+      return "goal";
+    case ObjectKind::Crate:
+      return "crate";
+    case ObjectKind::Model:
+      return "model";
+    case ObjectKind::Hole:
+      return "hole";
+    default:
+      return "other";
+  }
+}
+
+void WorldEditor::refreshManaged() {
+  managed_.clear();
+  world_.scene.forEach([this](EntityHandle handle, const EntityData& entity) {
+    if (entity.name != "Ground") managed_.push_back(handle);
+  });
+  if (managedIndex_ >= managed_.size() && !managed_.empty()) managedIndex_ = 0U;
+  if (managed_.empty()) managedIndex_ = 0U;
+}
+
+void WorldEditor::beginPlace() {
+  ghost_ = Vec3{0.0, 0.0, 0.0};
+  screen_ = Screen::Place;
+}
+
+void WorldEditor::confirmPlace() {
+  switch (pendingKind_) {
+    case ObjectKind::Player: {
+      EntityData player;
+      player.name = "Player";
+      player.mesh = MeshKind::cube;
+      player.transform.position = Vec3{ghost_.x, 0.5, ghost_.z};
+      player.transform.scale = Vec3{0.6, 1.0, 0.6};
+      player.color = world_.player.color;
+      player.roughness = 0.5;
+      const EntityHandle existing = playerEntity();
+      if (existing != kNullEntity) {
+        EntityData* current = world_.scene.get(existing);
+        if (current != nullptr) current->transform.position = player.transform.position;
+      } else {
+        world_.scene.create(player);
+      }
+      break;
+    }
+    case ObjectKind::Ball: {
+      const f64 radius = world_.ball.radius;
+      EntityData ball;
+      ball.name = "Ball";
+      ball.mesh = MeshKind::sphere;
+      ball.transform.position = Vec3{ghost_.x, radius, ghost_.z};
+      ball.transform.scale = Vec3{radius * 2.0, radius * 2.0, radius * 2.0};
+      ball.color = world_.ball.color;
+      ball.roughness = 0.3;
+      const EntityHandle existing = ballEntity();
+      if (existing != kNullEntity) {
+        EntityData* current = world_.scene.get(existing);
+        if (current != nullptr) *current = ball;
+      } else {
+        world_.scene.create(ball);
+      }
+      rebuildPhysics();
+      break;
+    }
+    case ObjectKind::Block: {
+      EntityData block;
+      block.name = "Block_" + std::to_string(nextNumber(world_.scene, "Block_"));
+      block.mesh = MeshKind::cube;
+      block.transform.position = Vec3{ghost_.x, pendingSize_ * 0.5, ghost_.z};
+      block.transform.scale = Vec3{pendingSize_, pendingSize_, pendingSize_};
+      block.color = Vec3{kBlockColor, kBlockColor, kBlockColor};
+      block.roughness = 0.5;
+      world_.scene.create(block);
+      rebuildPhysics();
+      break;
+    }
+    case ObjectKind::Wall: {
+      EntityData wall;
+      wall.name = "Wall_" + std::to_string(nextNumber(world_.scene, "Wall_"));
+      wall.mesh = MeshKind::cube;
+      wall.transform.position = Vec3{ghost_.x, 0.5, ghost_.z};
+      wall.transform.scale = pendingAxisZ_ ? Vec3{0.5, 1.0, pendingSize_} : Vec3{pendingSize_, 1.0, 0.5};
+      wall.color = Vec3{kWallColorR, kWallColorG, kWallColorB};
+      wall.roughness = 0.5;
+      world_.scene.create(wall);
+      rebuildPhysics();
+      break;
+    }
+    case ObjectKind::Goal: {
+      EntityData goal;
+      goal.name = "Goal_" + std::to_string(nextNumber(world_.scene, "Goal_"));
+      goal.mesh = MeshKind::cube;
+      goal.transform.position = Vec3{ghost_.x, kWorldGoalHeight * 0.5, ghost_.z};
+      goal.transform.scale = Vec3{pendingSize_, kWorldGoalHeight, 0.12};
+      goal.color = Vec3{0.9, 0.9, 0.9};
+      goal.roughness = 0.4;
+      world_.scene.create(goal);
+      rebuildPhysics();
+      break;
+    }
+    case ObjectKind::Crate: {
+      EntityData crate;
+      crate.name = "Crate_" + std::to_string(nextNumber(world_.scene, "Crate_"));
+      crate.mesh = MeshKind::cube;
+      crate.transform.position = Vec3{ghost_.x, kWorldCrateSize * 0.5, ghost_.z};
+      crate.transform.scale = Vec3{kWorldCrateSize, kWorldCrateSize, kWorldCrateSize};
+      crate.color = Vec3{kCrateColorR, kCrateColorG, kCrateColorB};
+      crate.roughness = 0.6;
+      world_.scene.create(crate);
+      rebuildPhysics();
+      break;
+    }
+    case ObjectKind::Hole: {
+      // A cup: a flat dark disc (a squashed sphere entity) flush with the
+      // ground. It is a game marker, not a collider — the ball rolls over it
+      // unless it is slow enough to drop in (captureHole).
+      EntityData hole;
+      hole.name = "Hole_" + std::to_string(nextNumber(world_.scene, "Hole_"));
+      hole.mesh = MeshKind::sphere;
+      hole.transform.position = Vec3{ghost_.x, kWorldHoleDepth * 0.5, ghost_.z};
+      hole.transform.scale = Vec3{kWorldHoleRadius * 2.0, kWorldHoleDepth, kWorldHoleRadius * 2.0};
+      hole.color = Vec3{kHoleColor, kHoleColor, kHoleColor};
+      hole.roughness = 1.0;
+      world_.scene.create(hole);
+      break;
+    }
+    case ObjectKind::Model: {
+      EntityData model;
+      model.name = "Model_" + std::to_string(nextNumber(world_.scene, "Model_"));
+      model.mesh = MeshKind::cube;  // fallback shape; meshFile drives rendering
+      model.transform.position = Vec3{ghost_.x, ghost_.y, ghost_.z};
+      model.transform.scale = Vec3{pendingSize_, pendingSize_, pendingSize_};
+      model.color = Vec3{1.0, 1.0, 1.0};
+      model.roughness = 0.5;
+      if (!pendingFile_.empty()) {
+        const std::string& dir = importDir_;
+        model.meshFile = (!dir.empty() && dir.back() != '/') ? dir + "/" + pendingFile_ : dir + pendingFile_;
+        // Unity-style import normalization: fit the model's largest bounding
+        // dimension to the chosen size, so any OBJ/FBX becomes a prop of the
+        // requested size regardless of the source file's units.
+        std::string loadError;
+        auto loaded = kimia::assets::loadMesh(model.meshFile, loadError);
+        if (loaded.has_value() && !loaded->mesh.positions.empty()) {
+          Vec3 lo = loaded->mesh.positions[0];
+          Vec3 hi = loaded->mesh.positions[0];
+          for (const Vec3& p : loaded->mesh.positions) {
+            lo.x = std::min(lo.x, p.x);
+            lo.y = std::min(lo.y, p.y);
+            lo.z = std::min(lo.z, p.z);
+            hi.x = std::max(hi.x, p.x);
+            hi.y = std::max(hi.y, p.y);
+            hi.z = std::max(hi.z, p.z);
+          }
+          const f64 size = std::max(hi.x - lo.x, std::max(hi.y - lo.y, hi.z - lo.z));
+          if (size > 1e-6) {
+            const f64 fit = pendingSize_ / size;
+            model.transform.scale = Vec3{fit, fit, fit};
+          }
+        }
+      }
+      world_.scene.create(model);
+      pendingFile_.clear();
+      break;
+    }
+    default:
+      break;
+  }
+  lastError_.clear();
+  // Stay in Place so several objects can be placed in a row.
+}
+
+bool WorldEditor::duplicateEntity(const std::string& name, std::string& outNewName) {
+  const EntityData* source = entity(name);
+  if (source == nullptr) return false;
+  // Numbered families keep their numbering (Block_1 -> Block_2); anything
+  // else gets a _2 suffix, so two copies are always two objects.
+  static const char* kPrefixes[] = {"Block_", "Wall_", "Goal_", "Crate_", "Hole_", "Model_"};
+  EntityData copy = *source;
+  for (const char* prefix : kPrefixes) {
+    if (nameNumber(name, prefix) > 0U) {
+      copy.name = std::string(prefix) + std::to_string(nextNumber(world_.scene, prefix));
+      break;
+    }
+  }
+  if (copy.name == name) copy.name = uniqueName(world_.scene, name);
+  world_.scene.create(copy);
+  rebuildPhysics();
+  refreshManaged();
+  selected_ = copy.name;  // Unity selects the new copy
+  outNewName = copy.name;
+  return true;
+}
+
+bool WorldEditor::renameEntity(const std::string& oldName, const std::string& newName) {
+  if (newName.empty() || newName == oldName) return !newName.empty() && entity(oldName) != nullptr;
+  if (entity(newName) != nullptr) return false;  // taken
+  // Behaviour is bound to these names (physics spawn, picking, ball rest):
+  // renaming them would break the game without a sound.
+  if (oldName == "Player" || oldName == "Ball" || oldName == "Ground") return false;
+  if (newName == "Player" || newName == "Ball" || newName == "Ground") return false;
+  EntityData* target = world_.scene.get(world_.scene.find(oldName));
+  if (target == nullptr) return false;
+  target->name = newName;
+  if (selected_ == oldName) selected_ = newName;
+  rebuildPhysics();  // a Block_1 renamed to a decoration stops blocking, and back
+  refreshManaged();
+  return true;
+}
+
+std::string WorldEditor::createObject(const std::string& kind, const Vec3& at) {
+  if (!hasWorld_) return std::string();
+  // Inside the field; the height sits each kind on the ground like the
+  // builder's own ghost does.
+  const f64 x = std::clamp(at.x, -world_.halfWidth(), world_.halfWidth());
+  const f64 z = std::clamp(at.z, -world_.halfLength(), world_.halfLength());
+  EntityData made;
+  made.mesh = MeshKind::cube;
+  bool needsPhysics = false;
+  if (kind == "cube" || kind == "sphere" || kind == "plane") {
+    made.name = uniqueName(world_.scene, kind == "cube" ? "Cube" : (kind == "sphere" ? "Sphere" : "Plane"));
+    made.mesh = kind == "cube" ? MeshKind::cube : (kind == "sphere" ? MeshKind::sphere : MeshKind::plane);
+    made.transform.position =
+        kind == "plane" ? Vec3{x, 0.02, z} : Vec3{x, 0.5, z};  // a plane floats just over the grass
+    made.transform.scale = kind == "plane" ? Vec3{2.0, 1.0, 2.0} : Vec3{1.0, 1.0, 1.0};
+    made.color = Vec3{0.8, 0.8, 0.8};
+    made.roughness = 0.5;
+  } else if (kind == "block" || kind == "wall" || kind == "goal" || kind == "crate" || kind == "hole") {
+    const f64 size = kind == "wall" ? kWorldWallMedium : (kind == "goal" ? kWorldGoalMedium : 1.0);
+    if (kind == "block") {
+      made.name = "Block_" + std::to_string(nextNumber(world_.scene, "Block_"));
+      made.transform.position = Vec3{x, size * 0.5, z};
+      made.transform.scale = Vec3{size, size, size};
+      made.color = Vec3{kBlockColor, kBlockColor, kBlockColor};
+    } else if (kind == "wall") {
+      made.name = "Wall_" + std::to_string(nextNumber(world_.scene, "Wall_"));
+      made.transform.position = Vec3{x, 0.5, z};
+      made.transform.scale = Vec3{0.5, 1.0, size};
+      made.color = Vec3{kWallColorR, kWallColorG, kWallColorB};
+    } else if (kind == "goal") {
+      made.name = "Goal_" + std::to_string(nextNumber(world_.scene, "Goal_"));
+      made.transform.position = Vec3{x, kWorldGoalHeight * 0.5, z};
+      made.transform.scale = Vec3{size, kWorldGoalHeight, 0.12};
+      made.color = Vec3{0.9, 0.9, 0.9};
+    } else if (kind == "crate") {
+      made.name = "Crate_" + std::to_string(nextNumber(world_.scene, "Crate_"));
+      made.transform.position = Vec3{x, kWorldCrateSize * 0.5, z};
+      made.transform.scale = Vec3{kWorldCrateSize, kWorldCrateSize, kWorldCrateSize};
+      made.color = Vec3{kCrateColorR, kCrateColorG, kCrateColorB};
+    } else {
+      made.name = "Hole_" + std::to_string(nextNumber(world_.scene, "Hole_"));
+      made.mesh = MeshKind::sphere;
+      made.transform.position = Vec3{x, kWorldHoleDepth * 0.5, z};
+      made.transform.scale = Vec3{kWorldHoleRadius * 2.0, kWorldHoleDepth, kWorldHoleRadius * 2.0};
+      made.color = Vec3{kHoleColor, kHoleColor, kHoleColor};
+    }
+    made.roughness = kind == "hole" ? 1.0 : (kind == "goal" ? 0.4 : 0.5);
+    needsPhysics = kind != "hole";
+  } else if (kind == "player" || kind == "ball") {
+    const EntityHandle existing = world_.scene.find(kind == "player" ? "Player" : "Ball");
+    if (existing != kNullEntity) {
+      // Singletons: creating again just moves them, like the catalog does.
+      EntityData* current = world_.scene.get(existing);
+      if (kind == "player") {
+        current->transform.position = Vec3{x, 0.5, z};
+      } else {
+        current->transform.position = Vec3{x, world_.ball.radius, z};
+        rebuildPhysics();
+      }
+      selected_ = current->name;
+      return current->name;
+    }
+    if (kind == "player") {
+      made.name = "Player";
+      made.transform.position = Vec3{x, 0.5, z};
+      made.transform.scale = Vec3{0.6, 1.0, 0.6};
+      made.color = world_.player.color;
+      made.roughness = 0.5;
+    } else {
+      made.name = "Ball";
+      made.mesh = MeshKind::sphere;
+      made.transform.position = Vec3{x, world_.ball.radius, z};
+      const f64 diameter = world_.ball.radius * 2.0;
+      made.transform.scale = Vec3{diameter, diameter, diameter};
+      made.color = world_.ball.color;
+      made.roughness = 0.3;
+      needsPhysics = true;
+    }
+  } else {
+    return std::string();  // unknown kind: nothing made, no crash
+  }
+  world_.scene.create(made);
+  if (needsPhysics) rebuildPhysics();
+  refreshManaged();
+  selected_ = made.name;
+  return made.name;
+}
+
+void WorldEditor::deleteManaged() {
+  if (managedIndex_ >= managed_.size()) return;
+  const EntityHandle handle = managed_[managedIndex_];
+  world_.scene.destroy(handle);
+  refreshManaged();
+  rebuildPhysics();
+  resetBallToCenter();
+}
+
+void WorldEditor::selectManagedAt(usize listIndex) {
+  refreshManaged();
+  if (listIndex >= managed_.size()) return;
+  managedIndex_ = listIndex;
+  inspectorPage_ = 0U;
+  screen_ = Screen::Inspector;
+}
+
+void WorldEditor::nudgeSelectedPosition(f64 dx, f64 dy, f64 dz) {
+  EntityData* entity = selectedEntity() != nullptr ? world_.scene.get(managed_[managedIndex_]) : nullptr;
+  if (entity == nullptr) return;
+  const f64 boundX = world_.halfWidth() - 0.5;
+  const f64 boundZ = world_.halfLength() - 0.5;
+  entity->transform.position.x = std::clamp(entity->transform.position.x + dx, -boundX, boundX);
+  entity->transform.position.y = std::clamp(entity->transform.position.y + dy, 0.05, 20.0);
+  entity->transform.position.z = std::clamp(entity->transform.position.z + dz, -boundZ, boundZ);
+  rebuildPhysics();
+}
+
+void WorldEditor::nudgeSelectedScale(f64 delta) {
+  EntityData* entity = selectedEntity() != nullptr ? world_.scene.get(managed_[managedIndex_]) : nullptr;
+  if (entity == nullptr) return;
+  if (objectKindForName(entity->name) == ObjectKind::Hole) return;  // a cup has one size (the capture rule)
+  const f64 value = std::clamp(entity->transform.scale.x + delta, kWorldNudgeStep, 10.0);
+  entity->transform.scale = Vec3{value, value, value};
+  rebuildPhysics();
+}
+
+void WorldEditor::applyManagedColor(const Vec3& color) {
+  if (managedIndex_ >= managed_.size()) return;
+  EntityData* entity = world_.scene.get(managed_[managedIndex_]);
+  if (entity == nullptr) return;
+  entity->color = color;
+  if (objectKindForName(entity->name) == ObjectKind::Player) world_.player.color = color;
+  if (objectKindForName(entity->name) == ObjectKind::Ball) world_.ball.color = color;
+}
+
+// --- Menu model ---
+
+// The scorecard as one line: strokes per cup, the total, the course par and
+// the difference (under/over/even), e.g. «۳ ۲ ۴ | جمع ۹ | پار ۹ | برابر پار».
+std::string WorldEditor::scorecardText() const {
+  std::string text;
+  for (usize i = 0; i < scorecard_.size(); ++i) {
+    if (i > 0U) text += ' ';
+    text += std::to_string(scorecard_[i]);
+  }
+  if (text.empty()) text = "—";
+  text += " | جمع " + std::to_string(totalStrokes()) + " | پار " +
+          std::to_string(par() * static_cast<u32>(scorecard_.size()));
+  const i32 diff = scoreToPar();
+  if (diff == 0) {
+    text += " | برابر پار";
+  } else if (diff < 0) {
+    text += " | " + std::to_string(-diff) + " زیر پار";
+  } else {
+    text += " | " + std::to_string(diff) + " بالای پار";
+  }
+  return text;
+}
+
+std::string WorldEditor::menuTitle() const {
+  switch (screen_) {
+    case Screen::Main:
+      return "KIMIA World — منوی اصلی";
+    case Screen::AskProfile:
+      return "دنیای جدید: کدام بازی؟";
+    case Screen::Builder:
+      return world_.name + " (" + world_.profile.title + ") — سازنده";
+    case Screen::Catalog:
+      return "افزودن جسم: چی اضافه کنیم؟";
+    case Screen::AskPlayer:
+      return "بازیکن: چه سرعتی؟";
+    case Screen::AskBall:
+      return "توپ: دقیق باشه یا فانتزی؟";
+    case Screen::AskBlock:
+      return "بلوک: چه اندازه‌ای؟";
+    case Screen::AskWallLen:
+      return "دیوار: چه طولی؟";
+    case Screen::AskWallAxis:
+      return "دیوار: در چه جهتی؟";
+    case Screen::AskGoal:
+      return "دروازه: چه عرضی؟";
+    case Screen::Place:
+      return "جای‌گذاری: با جهت‌ها حرکت کن";
+    case Screen::Manage:
+      return "اجسام — کدام را ویرایش کنیم؟";
+    case Screen::Inspector: {
+      const EntityData* entity = selectedEntity();
+      if (entity == nullptr) return "بازرس";
+      return entity->name + " — x " + format1f(entity->transform.position.x) + " y " +
+             format1f(entity->transform.position.y) + " z " + format1f(entity->transform.position.z) +
+             " | اندازه " + format1f(entity->transform.scale.x);
+    }
+    case Screen::Move:
+      return "جابه‌جایی: با جهت‌ها حرکت کن";
+    case Screen::ConfirmDelete:
+      return "حذف شود؟";
+    case Screen::AskColor:
+      return "چه رنگی؟";
+    case Screen::AskEnvironment:
+      return "محیط: چه فضایی؟";
+    case Screen::Play:
+      if (shotMode()) {
+        if (charging_) return "شوت: رها کن تا بزنی — قدرت " + std::to_string(static_cast<i32>(power_ * 100.0)) + "٪";
+        if (!ballAtRest()) return "توپ می‌رود…";
+        if (holeScoring() && holeCount() > 1U) {
+          return "سوراخ " + std::to_string(currentHole_ + 1U) + " از " + std::to_string(holeCount()) +
+                 " — نشانه بگیر (← →) و «شوت» را نگه دار";
+        }
+        return "نشانه بگیر (← →) و «شوت» را نگه دار";
+      }
+      return "در حال بازی — با جهت‌ها حرکت کن";
+    case Screen::AskModelFile:
+      return "مدل از فایل: کدام فایل؟";
+    case Screen::AskModelSize:
+      return "مدل: چه اندازه‌ای؟";
+    case Screen::RoundEnd:
+      return "پایان دور! " + scorecardText();
+    default:
+      if (holeScoring()) {
+        if (currentHole_ + 1U >= holeCount()) return "رفت تو سوراخ! ضربه‌ها: " + std::to_string(strokes_);
+        return "رفت تو سوراخ! ضربه‌ها: " + std::to_string(strokes_) + " — بعدی: سوراخ " +
+               std::to_string(currentHole_ + 2U);
+      }
+      return "گل شد!";
+  }
+}
+
+std::vector<std::string> WorldEditor::optionLabels() const {
+  switch (screen_) {
+    case Screen::Main:
+      return {"دنیای جدید", "باز کردن دنیا", "خروج"};
+    case Screen::Builder:
+      return {"افزودن جسم", "مدیریت اجسام", "محیط", "بازی (PLAY)", "ذخیره", "منوی اصلی"};
+    case Screen::Catalog:
+      return {"بازیکن", "توپ", "بلوک", "دیوار", "دروازه", "جعبه", "مدل از فایل", "سوراخ", "بازگشت"};
+    case Screen::AskProfile: {
+      // The games this engine can make: 5 per screen + more/back. The
+      // reference games are hidden; only the empty project and the user's
+      // own *.kimiaprofile files are offered.
+      std::vector<std::string> labels;
+      const usize begin = profilePage_ * 5U;
+      const usize end = begin + 5U < menuProfileIndex_.size() ? begin + 5U : menuProfileIndex_.size();
+      for (usize i = begin; i < end; ++i) labels.push_back(profiles_[menuProfileIndex_[i]].title);
+      if (end < menuProfileIndex_.size()) {
+        labels.push_back("بیشتر…");
+      } else {
+        labels.push_back("بازگشت");
+      }
+      return labels;
+    }
+    case Screen::AskModelFile: {
+      std::vector<std::string> labels;
+      const usize begin = importPage_ * 5U;
+      const usize end = begin + 5U < importFiles_.size() ? begin + 5U : importFiles_.size();
+      for (usize i = begin; i < end; ++i) labels.push_back(importFiles_[i]);
+      if (end < importFiles_.size()) {
+        labels.push_back("بیشتر…");
+      } else {
+        labels.push_back("بازگشت");
+      }
+      return labels;
+    }
+    case Screen::AskModelSize:
+      return {"کوچک", "متوسط", "بزرگ", "بازگشت"};
+    case Screen::AskPlayer:
+      return {"سریع", "عادی", "آرام", "بازگشت"};
+    case Screen::AskBall:
+      return {"دقیق (مثل گلف)", "فانتزی (پران و لغزنده)", "بازگشت"};
+    case Screen::AskBlock:
+      return {"کوچک", "متوسط", "بزرگ", "بازگشت"};
+    case Screen::AskWallLen:
+      return {"کوتاه", "متوسط", "بلند", "بازگشت"};
+    case Screen::AskWallAxis:
+      return {"در امتداد Z (عمق)", "در امتداد X (عرض)", "بازگشت"};
+    case Screen::AskGoal:
+      return {"کوچک", "متوسط", "بزرگ", "بازگشت"};
+    case Screen::Place:
+      return {"قرار دادن", "بازگشت"};
+    case Screen::Manage: {
+      // Hierarchy: a paged list of every object by name (5 per screen).
+      if (managed_.empty()) return {"بازگشت"};
+      const usize begin = managePage_ * 5U;
+      const usize shown = begin + 5U < managed_.size() ? 5U : managed_.size() - begin;
+      std::vector<std::string> labels;
+      for (usize i = begin; i < begin + shown; ++i) {
+        const EntityData* entity = world_.scene.get(managed_[i]);
+        labels.push_back(entity != nullptr ? entity->name : "?");
+      }
+      if (begin + 5U < managed_.size()) {
+        labels.push_back("بیشتر…");
+      } else {
+        labels.push_back("بازگشت");
+      }
+      return labels;
+    }
+    case Screen::Inspector: {
+      if (selectedEntity() == nullptr) return {"بازگشت"};
+      if (inspectorPage_ == 0U) {
+        return {"X +۰٫۱", "X −۰٫۱", "Z +۰٫۱", "Z −۰٫۱", "بیشتر…"};
+      }
+      if (inspectorPage_ == 1U) {
+        return {"بالا +۰٫۱", "پایین −۰٫۱", "بزرگ‌تر +۰٫۱", "کوچک‌تر −۰٫۱", "بیشتر…"};
+      }
+      return {"جابه‌جایی با جهت", "رنگ", "حذف", "بازگشت"};
+    }
+    case Screen::Move:
+      return {"پایان"};
+    case Screen::RoundEnd:
+      return {"دور جدید", "منو"};
+    case Screen::ConfirmDelete:
+      return {"بله", "نه"};
+    case Screen::AskColor:
+      return {"قرمز", "سبز", "آبی", "زرد", "سفید", "بازگشت"};
+    case Screen::AskEnvironment:
+      return {"چمنزار", "شنی (کویر)", "شب", "آسفالت (خیابان)", "بازگشت"};
+    default:
+      return {};
+  }
+}
+
+std::vector<std::pair<std::string, std::string>> WorldEditor::holdPad() const {
+  if (cameraControlled()) {
+    // Orbit camera: the arrows rotate the view around the scene (or around
+    // the selected object in the hierarchy/inspector screens).
+    return {{"بالا", "up"}, {"چرخش ←", "left"}, {"پایین", "down"}, {"چرخش →", "right"}};
+  }
+  if (!playing() && screen_ != Screen::Place && screen_ != Screen::Move) return {};
+  if (screen_ == Screen::RoundEnd) return {};
+  if (playing()) {
+    // Ball control (stage 23) rides along with the movement pads: the curl
+    // sticks are held while aiming, the dribble while running.
+    if (shotMode()) {
+      return {{"← نشانه", "left"},
+              {"نشانه →", "right"},
+              {"شوت (نگه دار)", "space"},
+              {"چرخ ←", "q"},
+              {"چرخ →", "e"}};
+    }
+    if (arenaMode()) {
+      // Hold to fire, like a real trigger; the arrows aim and move.
+      return {{"↑", "up"},   {"←", "left"}, {"↓", "down"}, {"→", "right"},
+              {"شلیک", "f"}};
+    }
+    if (teamSize() > 1U) {
+      return {{"↑", "up"},   {"←", "left"},  {"↓", "down"},  {"→", "right"},
+              {"دریبل", "c"}, {"چرخ ←", "q"}, {"چرخ →", "e"}};
+    }
+    return {{"↑", "up"}, {"←", "left"}, {"↓", "down"}, {"→", "right"}, {"دریبل", "c"}};
+  }
+  return {{"↑", "up"}, {"←", "left"}, {"↓", "down"}, {"→", "right"}, {"ریز", "shift"}};
+}
+
+std::vector<std::pair<std::string, std::string>> WorldEditor::tapPad() const {
+  // A published game hands out a PLAYER's controls, never the editor's.
+  // Leaving a "menu" button on screen would let anyone you gave the game
+  // to walk straight into the builder and take it apart.
+  if (playOnly_) {
+    std::vector<std::pair<std::string, std::string>> pads;
+    if (!playing()) return pads;
+    if (arenaMode()) {
+      pads.push_back({"شلیک", "f"});
+      pads.push_back({"خشاب", "r"});
+      return pads;
+    }
+    if (shotMode()) return pads;
+    pads.push_back({"پرش", "j"});
+    if (teamSize() > 1U) pads.push_back({"پاس", "p"});
+    if (tricksEnabled()) {
+      pads.push_back({"لایی", "n"});
+      pads.push_back({"رولت", "o"});
+      pads.push_back({"روپایی", "u"});
+    }
+    return pads;
+  }
+  if (cameraControlled()) {
+    return {{"نزدیک‌تر", "q"}, {"دورتر", "e"}, {"دوربین پیش‌فرض", "c"}};
+  }
+  if (!playing() || screen_ == Screen::RoundEnd) return {};
+  // Arena mode (stage 30): a rifle, not a ball.
+  if (arenaMode()) {
+    return {{"شلیک", "f"}, {"خشاب", "r"}, {"منو", "b"}};
+  }
+  if (shotMode()) return {{"توپ از نو", "r"}, {"منو", "b"}};
+  // Skill moves (stage 26) are tap moves: you commit to them, so they are
+  // one press, not something you hold. Only the games that allow them.
+  std::vector<std::pair<std::string, std::string>> pads;
+  pads.push_back({"پرش", "j"});
+  // A pass only makes sense when there is a team to pass to.
+  if (teamSize() > 1U) pads.push_back({"پاس", "p"});
+  if (tricksEnabled()) {
+    pads.push_back({"لایی", "n"});
+    pads.push_back({"رولت", "o"});
+    pads.push_back({"روپایی", "u"});
+  }
+  pads.push_back({"توپ از نو", "r"});
+  pads.push_back({"منو", "b"});
+  return pads;
+}
+
+// --- Option handling (the builder state machine) ---
+
+void WorldEditor::choose(i32 optionIndex) {
+  switch (screen_) {
+    case Screen::Main: {
+      if (optionIndex == 0) {
+        // «دنیای جدید» asks which game first; one game skips the question.
+        refreshProfiles();
+        profilePage_ = 0U;
+        if (profiles_.size() == 1U) {
+          createWorld(profiles_[0]);
+        } else {
+          screen_ = Screen::AskProfile;
+        }
+      } else if (optionIndex == 1) {
+        std::string error;
+        if (!loadWorld(worldPath_, error)) lastError_ = error;  // shown in stats
+      } else if (optionIndex == 2) {
+        quitRequested_ = true;
+      }
+      break;
+    }
+    case Screen::AskProfile: {
+      const usize begin = profilePage_ * 5U;
+      const usize shown = begin + 5U < menuProfileIndex_.size() ? 5U : menuProfileIndex_.size() - begin;
+      if (menuProfileIndex_.empty()) {
+        screen_ = Screen::Main;
+        break;
+      }
+      if (optionIndex >= 0 && static_cast<usize>(optionIndex) < shown) {
+        const GameProfile chosen = profiles_[menuProfileIndex_[begin + static_cast<usize>(optionIndex)]];
+        profilePage_ = 0U;
+        createWorld(chosen);
+      } else if (optionIndex == static_cast<i32>(shown)) {
+        if (begin + 5U < menuProfileIndex_.size()) {
+          ++profilePage_;
+        } else {
+          profilePage_ = 0U;
+          screen_ = Screen::Main;
+        }
+      } else {
+        profilePage_ = 0U;
+        screen_ = Screen::Main;
+      }
+      break;
+    }
+    case Screen::Builder: {
+      if (optionIndex == 0) {
+        screen_ = Screen::Catalog;
+      } else if (optionIndex == 1) {
+        refreshManaged();
+        managePage_ = 0U;
+        screen_ = Screen::Manage;
+      } else if (optionIndex == 2) {
+        screen_ = Screen::AskEnvironment;
+      } else if (optionIndex == 3) {
+        enterPlay();
+      } else if (optionIndex == 4) {
+        std::string error;
+        saveWorld(worldPath_, error);
+      } else if (optionIndex == 5) {
+        screen_ = Screen::Main;
+      }
+      break;
+    }
+    case Screen::Catalog: {
+      if (optionIndex == 0) {
+        screen_ = Screen::AskPlayer;
+      } else if (optionIndex == 1) {
+        if (world_.profile.ballChoice) {
+          screen_ = Screen::AskBall;
+        } else {
+          // This game has one ball: no question, straight to placement.
+          applyBallType(world_.ball, world_.profile.ballDefault);
+          pendingKind_ = ObjectKind::Ball;
+          beginPlace();
+        }
+      } else if (optionIndex == 2) {
+        screen_ = Screen::AskBlock;
+      } else if (optionIndex == 3) {
+        screen_ = Screen::AskWallLen;
+      } else if (optionIndex == 4) {
+        screen_ = Screen::AskGoal;
+      } else if (optionIndex == 5) {
+        // جعبه: a dynamic crate, fixed 1x1x1 — no size question.
+        pendingKind_ = ObjectKind::Crate;
+        pendingSize_ = kWorldCrateSize;
+        beginPlace();
+      } else if (optionIndex == 6) {
+        // مدل از فایل: list the OBJ/FBX files of the import directory.
+        refreshImportFiles();
+        screen_ = Screen::AskModelFile;
+      } else if (optionIndex == 7) {
+        // سوراخ: the golf cup, fixed size — no question.
+        pendingKind_ = ObjectKind::Hole;
+        pendingSize_ = kWorldHoleRadius * 2.0;
+        beginPlace();
+      } else if (optionIndex == 8) {
+        screen_ = Screen::Builder;
+      }
+      break;
+    }
+    case Screen::AskModelFile: {
+      const usize begin = importPage_ * 5U;
+      const usize shown = begin + 5U < importFiles_.size() ? 5U : importFiles_.size() - begin;
+      if (importFiles_.empty()) {
+        screen_ = Screen::Catalog;
+        break;
+      }
+      if (optionIndex >= 0 && static_cast<usize>(optionIndex) < shown) {
+        pendingFile_ = importFiles_[begin + static_cast<usize>(optionIndex)];
+        importPage_ = 0U;
+        screen_ = Screen::AskModelSize;
+      } else if (optionIndex == static_cast<i32>(shown)) {
+        if (begin + 5U < importFiles_.size()) {
+          ++importPage_;
+        } else {
+          screen_ = Screen::Catalog;
+        }
+      } else {
+        screen_ = Screen::Catalog;
+      }
+      break;
+    }
+    case Screen::AskModelSize: {
+      if (optionIndex == 0) {
+        pendingSize_ = kWorldModelSmall;
+      } else if (optionIndex == 1) {
+        pendingSize_ = kWorldModelMedium;
+      } else if (optionIndex == 2) {
+        pendingSize_ = kWorldModelLarge;
+      } else {
+        screen_ = Screen::AskModelFile;
+        break;
+      }
+      pendingKind_ = ObjectKind::Model;
+      beginPlace();
+      break;
+    }
+    case Screen::AskPlayer: {
+      if (optionIndex == 0) {
+        world_.player.speed = kWorldPlayerFast;
+      } else if (optionIndex == 1) {
+        world_.player.speed = kWorldPlayerNormal;
+      } else if (optionIndex == 2) {
+        world_.player.speed = kWorldPlayerSlow;
+      } else {
+        screen_ = Screen::Catalog;
+        break;
+      }
+      pendingKind_ = ObjectKind::Player;
+      beginPlace();
+      break;
+    }
+    case Screen::AskBall: {
+      if (optionIndex == 0) {
+        applyBallType(world_.ball, BallType::Accurate);
+      } else if (optionIndex == 1) {
+        applyBallType(world_.ball, BallType::Fantasy);
+      } else {
+        screen_ = Screen::Catalog;
+        break;
+      }
+      pendingKind_ = ObjectKind::Ball;
+      beginPlace();
+      break;
+    }
+    case Screen::AskBlock: {
+      if (optionIndex == 0) {
+        pendingSize_ = kWorldBlockSmall;
+      } else if (optionIndex == 1) {
+        pendingSize_ = kWorldBlockMedium;
+      } else if (optionIndex == 2) {
+        pendingSize_ = kWorldBlockLarge;
+      } else {
+        screen_ = Screen::Catalog;
+        break;
+      }
+      pendingKind_ = ObjectKind::Block;
+      beginPlace();
+      break;
+    }
+    case Screen::AskWallLen: {
+      if (optionIndex == 0) {
+        pendingSize_ = kWorldWallShort;
+      } else if (optionIndex == 1) {
+        pendingSize_ = kWorldWallMedium;
+      } else if (optionIndex == 2) {
+        pendingSize_ = kWorldWallLong;
+      } else {
+        screen_ = Screen::Catalog;
+        break;
+      }
+      pendingKind_ = ObjectKind::Wall;
+      screen_ = Screen::AskWallAxis;
+      break;
+    }
+    case Screen::AskWallAxis: {
+      if (optionIndex == 0) {
+        pendingAxisZ_ = true;
+      } else if (optionIndex == 1) {
+        pendingAxisZ_ = false;
+      } else {
+        screen_ = Screen::AskWallLen;
+        break;
+      }
+      beginPlace();
+      break;
+    }
+    case Screen::AskGoal: {
+      if (optionIndex == 0) {
+        pendingSize_ = kWorldGoalSmall;
+      } else if (optionIndex == 1) {
+        pendingSize_ = kWorldGoalMedium;
+      } else if (optionIndex == 2) {
+        pendingSize_ = kWorldGoalLarge;
+      } else {
+        screen_ = Screen::Catalog;
+        break;
+      }
+      pendingKind_ = ObjectKind::Goal;
+      beginPlace();
+      break;
+    }
+    case Screen::Place: {
+      if (optionIndex == 0) {
+        confirmPlace();
+      } else {
+        screen_ = Screen::Builder;
+      }
+      break;
+    }
+    case Screen::Manage: {
+      if (managed_.empty()) {
+        if (optionIndex == 0) screen_ = Screen::Builder;
+        break;
+      }
+      const usize begin = managePage_ * 5U;
+      const usize shown = begin + 5U < managed_.size() ? 5U : managed_.size() - begin;
+      if (optionIndex >= 0 && static_cast<usize>(optionIndex) < shown) {
+        selectManagedAt(begin + static_cast<usize>(optionIndex));
+      } else if (optionIndex == static_cast<i32>(shown)) {
+        if (begin + 5U < managed_.size()) {
+          ++managePage_;
+        } else {
+          screen_ = Screen::Builder;
+        }
+      } else {
+        screen_ = Screen::Builder;
+      }
+      break;
+    }
+    case Screen::Inspector: {
+      if (selectedEntity() == nullptr) {
+        screen_ = Screen::Manage;
+        break;
+      }
+      if (inspectorPage_ == 0U) {
+        if (optionIndex == 0) {
+          nudgeSelectedPosition(kWorldNudgeStep, 0.0, 0.0);
+        } else if (optionIndex == 1) {
+          nudgeSelectedPosition(-kWorldNudgeStep, 0.0, 0.0);
+        } else if (optionIndex == 2) {
+          nudgeSelectedPosition(0.0, 0.0, kWorldNudgeStep);
+        } else if (optionIndex == 3) {
+          nudgeSelectedPosition(0.0, 0.0, -kWorldNudgeStep);
+        } else if (optionIndex == 4) {
+          inspectorPage_ = 1U;
+        }
+      } else if (inspectorPage_ == 1U) {
+        if (optionIndex == 0) {
+          nudgeSelectedPosition(0.0, kWorldNudgeStep, 0.0);
+        } else if (optionIndex == 1) {
+          nudgeSelectedPosition(0.0, -kWorldNudgeStep, 0.0);
+        } else if (optionIndex == 2) {
+          nudgeSelectedScale(kWorldNudgeStep);
+        } else if (optionIndex == 3) {
+          nudgeSelectedScale(-kWorldNudgeStep);
+        } else if (optionIndex == 4) {
+          inspectorPage_ = 2U;
+        }
+      } else {
+        if (optionIndex == 0) {
+          screen_ = Screen::Move;  // free drag with the arrows
+        } else if (optionIndex == 1) {
+          screen_ = Screen::AskColor;
+        } else if (optionIndex == 2) {
+          screen_ = Screen::ConfirmDelete;
+        } else if (optionIndex == 3) {
+          screen_ = Screen::Manage;
+        }
+      }
+      break;
+    }
+    case Screen::Move: {
+      if (optionIndex == 0) {
+        rebuildPhysics();
+        screen_ = Screen::Inspector;
+      }
+      break;
+    }
+    case Screen::RoundEnd: {
+      if (optionIndex == 0) {
+        resetBall();  // a new round: tee, cup 1, clean scorecard
+      } else if (optionIndex == 1) {
+        backToMenu();
+      }
+      break;
+    }
+    case Screen::ConfirmDelete: {
+      if (optionIndex == 0) {
+        deleteManaged();
+        screen_ = Screen::Manage;
+      } else {
+        screen_ = Screen::Inspector;
+      }
+      break;
+    }
+    case Screen::AskColor: {
+      if (optionIndex == 0) {
+        applyManagedColor(Vec3{0.85, 0.15, 0.15});
+      } else if (optionIndex == 1) {
+        applyManagedColor(Vec3{0.2, 0.75, 0.3});
+      } else if (optionIndex == 2) {
+        applyManagedColor(Vec3{0.2, 0.5, 0.9});
+      } else if (optionIndex == 3) {
+        applyManagedColor(Vec3{0.9, 0.85, 0.3});
+      } else if (optionIndex == 4) {
+        applyManagedColor(Vec3{0.92, 0.92, 0.92});
+      }
+      screen_ = Screen::Inspector;
+      break;
+    }
+    case Screen::AskEnvironment: {
+      if (optionIndex == 0) {
+        world_.environment = EnvironmentKind::Grass;
+      } else if (optionIndex == 1) {
+        world_.environment = EnvironmentKind::Sand;
+      } else if (optionIndex == 2) {
+        world_.environment = EnvironmentKind::Night;
+      } else if (optionIndex == 3) {
+        world_.environment = EnvironmentKind::Asphalt;
+      }
+      if (optionIndex <= 3) applyEnvironmentToScene();
+      screen_ = Screen::Builder;
+      break;
+    }
+    default:
+      break;  // play screens have no options; taps are handled by the app
+  }
+}
+
+}  // namespace kimia
