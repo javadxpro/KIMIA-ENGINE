@@ -1,0 +1,1567 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>KIMIA Editor</title>
+<style>
+:root{
+  --bg:#0a0e11; --panel:#111518; --panel2:#161b1f; --edge:#3e4245;
+  --ink:#d7dade; --dim:#8a9299; --accent:#c9d2d8; --go:#7fbf9a; --bad:#d08a80;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:13px/1.45 "Segoe UI",system-ui,Roboto,sans-serif;overflow:hidden}
+#editor{display:grid;height:100vh;
+  grid-template-columns:232px 308px 1fr;
+  grid-template-rows:46px 1fr 188px;
+  grid-template-areas:"top top top" "hier insp game" "proj proj console"}
+@media(max-width:1100px){
+  #editor{grid-template-columns:200px 260px 1fr}
+}
+@media(max-width:900px){
+  #editor{grid-template-columns:1fr;grid-template-rows:46px 30vh 1fr 150px;
+    grid-template-areas:"top" "game" "insp" "console"}
+  #hier{display:none}
+  #hier.show{display:block;position:fixed;inset:46px 0 0 0;z-index:20}
+  #proj{display:none}
+}
+#top{grid-area:top;display:flex;align-items:center;gap:8px;padding:0 10px;
+  background:var(--panel2);border-bottom:1px solid var(--edge);overflow-x:auto}
+.brand{font-weight:700;letter-spacing:.12em;color:var(--accent);white-space:nowrap}
+.brand small{color:var(--dim);font-weight:400;letter-spacing:0}
+#hier{grid-area:hier;background:var(--panel);border-right:1px solid var(--edge);
+  overflow:auto;padding:8px;min-height:0}
+#insp{grid-area:insp;background:var(--panel);border-right:1px solid var(--edge);
+  overflow:auto;padding:10px;min-height:0}
+#game{grid-area:game;position:relative;background:#05070a;display:flex;
+  align-items:center;justify-content:center;overflow:hidden;min-width:0}
+#game img{max-width:100%;max-height:100%;image-rendering:pixelated;
+  touch-action:none;user-select:none;-webkit-user-drag:none}
+#gamebar{position:absolute;left:0;right:0;bottom:0;display:flex;gap:12px;
+  align-items:center;padding:6px 10px;background:rgba(6,9,12,.85);
+  border-top:1px solid var(--edge);font-size:11px;color:var(--dim)}
+#gametool{color:var(--accent);font-weight:600}
+#tapHint{margin-left:auto;color:var(--go)}
+#proj{grid-area:proj;background:var(--panel);border-top:1px solid var(--edge);
+  border-right:1px solid var(--edge);overflow:auto;padding:8px 10px;min-height:0}
+#console{grid-area:console;background:#0a0e11;border-top:1px solid var(--edge);
+  display:flex;flex-direction:column;min-height:0}
+#conbar{display:flex;align-items:center;gap:8px;padding:6px 10px;
+  border-bottom:1px solid var(--edge);font-size:11px;color:var(--dim)}
+#conlog{flex:1;overflow:auto;padding:6px 10px;font-family:ui-monospace,Menlo,monospace;
+  font-size:11px}
+#conlog div{white-space:nowrap}
+#conlog .t{color:#4a5258;margin-right:8px}
+h2{font-size:11px;letter-spacing:.14em;color:var(--dim);margin:12px 0 6px;
+  text-transform:uppercase;font-weight:600}
+h2:first-child{margin-top:0}
+.row{display:flex;gap:6px;align-items:center;margin-bottom:6px}
+.row label{color:var(--dim);min-width:48px;font-size:12px}
+button{background:#232a2f;color:var(--ink);border:1px solid var(--edge);
+  border-radius:4px;padding:5px 9px;cursor:pointer;font:inherit;font-size:12px;white-space:nowrap}
+button:hover{border-color:var(--accent)}
+button.on{background:#2b3238;border-color:var(--accent)}
+button.go{background:#1f3a2a;border-color:#33553f;font-weight:600}
+button.bad{background:#3a2422;border-color:#5a3a36}
+button:disabled{opacity:.4;cursor:default}
+input,select{background:#0d1216;color:var(--ink);border:1px solid var(--edge);
+  border-radius:4px;padding:4px 6px;font:inherit;font-size:12px;width:100%;min-width:0}
+input[type=color]{padding:1px;height:26px}
+input[type=checkbox]{width:auto}
+.item{padding:5px 7px;border:1px solid transparent;border-radius:4px;cursor:pointer;
+  display:flex;align-items:center;gap:6px;font-size:12px}
+.item:hover{background:#1a2126}
+.item.on{background:#232b31;border-color:var(--accent)}
+.item button{padding:1px 7px;font-size:10px}
+.pip{width:7px;height:7px;border-radius:50%;background:#3e4245;flex:none}
+.pip.solid{background:var(--accent)}
+.pip.moving{background:var(--go)}
+.tag{display:inline-flex;align-items:center;gap:4px;background:#232a2f;
+  border:1px solid var(--edge);border-radius:10px;padding:1px 7px;font-size:11px;margin:0 4px 4px 0}
+.tag b{cursor:pointer;color:var(--dim)}
+.tag b:hover{color:var(--bad)}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px}
+.wire{background:#0d1216;border:1px solid var(--edge);border-radius:4px;
+  padding:4px 6px;margin-bottom:4px;font-size:11px;display:flex;justify-content:space-between;gap:6px}
+.wire span{color:var(--accent)}
+.hint{color:var(--dim);font-size:11px;line-height:1.6}
+.projcols{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+@media(max-width:1100px){.projcols{grid-template-columns:1fr 1fr}}
+#rulesSheet{display:none;position:fixed;inset:0;background:var(--bg);z-index:40;
+  flex-direction:column}
+#rulesSheet.show{display:flex}
+.sheetbar{display:flex;align-items:center;gap:10px;padding:10px 14px;
+  background:var(--panel2);border-bottom:1px solid var(--edge)}
+.sheetbody{flex:1;overflow:auto;display:grid;gap:14px;padding:14px;
+  grid-template-columns:1fr 1fr 1fr 1fr}
+@media(max-width:1200px){.sheetbody{grid-template-columns:1fr 1fr}}
+@media(max-width:900px){.sheetbody{grid-template-columns:1fr}}
+.col{background:var(--panel);border:1px solid var(--edge);border-radius:6px;padding:10px}
+.rule{background:#0d1216;border:1px solid var(--edge);border-radius:4px;
+  padding:6px 8px;margin-bottom:5px;font-size:11px;cursor:pointer;line-height:1.5}
+.rule.on{border-color:var(--accent)}
+.rule.off{opacity:.45}
+.rule .tools{display:flex;gap:4px;margin-top:5px}
+.rule .tools button{padding:1px 6px;font-size:10px}
+#flash{position:fixed;bottom:200px;left:50%;transform:translateX(-50%);
+  background:#0d1216;border:1px solid var(--accent);border-radius:6px;
+  padding:7px 14px;font-size:12px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:50}
+#flash.on{opacity:1}
+#flash.err{border-color:var(--bad);color:#f0b5ae}
+.toolbar-group{display:flex;gap:4px;align-items:center;padding:0 8px;
+  border-left:1px solid var(--edge);border-right:1px solid var(--edge)}
+.toolbar-group:first-of-type{border-left:none}
+</style>
+</head>
+<body>
+<div id="editor">
+  <div id="top">
+    <div class="brand">KIMIA <small>Editor</small></div>
+    <button onclick="toggleHier()" id="hierBtn" style="display:none">Hierarchy</button>
+    <div class="toolbar-group" title="Transform tools (Q/W/E/R)">
+      <button id="toolSelect" class="on" onclick="setTool('select')">Select</button>
+      <button id="toolMove" onclick="setTool('move')">Move</button>
+      <button id="toolRotate" onclick="setTool('rotate')">Rotate</button>
+      <button id="toolScale" onclick="setTool('scale')">Scale</button>
+    </div>
+    <div class="toolbar-group" title="Play controls">
+      <button id="btnPlay" class="go" onclick="transportPlay()">&#9654; Play</button>
+      <button id="btnPause" onclick="transportPause()">&#10073;&#10073; Pause</button>
+      <button id="btnStep" onclick="transportStep()">Step &#9654;|</button>
+    </div>
+    <div class="toolbar-group" title="Snapping">
+      <label style="font-size:11px;color:var(--dim)"><input type="checkbox" id="snapOn"> snap</label>
+      <select id="snapVal" style="width:auto">
+        <option value="0.1">0.1</option><option value="0.25">0.25</option>
+        <option value="0.5" selected>0.5</option><option value="1">1</option>
+      </select>
+    </div>
+    <div class="toolbar-group" title="Create a game object at the origin">
+      <select id="createKind" style="width:auto">
+        <option value="cube">Cube</option><option value="sphere">Sphere</option>
+        <option value="plane">Plane</option><option value="block">Block</option>
+        <option value="wall">Wall</option><option value="goal">Goal</option>
+        <option value="crate">Crate</option><option value="hole">Hole</option>
+        <option value="player">Player</option><option value="ball">Ball</option>
+      </select>
+      <button class="go" onclick="createObject()">+ Create</button>
+    </div>
+    <div style="flex:1"></div>
+    <span class="hint" id="worldName">-</span>
+    <button onclick="showRules()">Rules</button>
+    <button class="go" onclick="publish()">Publish</button>
+    <button onclick="location.href='/'">Game &rsaquo;</button>
+  </div>
+
+  <div id="hier">
+    <h2>Hierarchy</h2>
+    <div class="row">
+      <button style="flex:1" onclick="duplicate()" title="Ctrl+D">Duplicate</button>
+      <button class="bad" style="flex:1" onclick="scrap()">Delete</button>
+    </div>
+    <div id="hierList"></div>
+    <div class="hint">Click to select. Ctrl+D duplicates, Delete removes.</div>
+  </div>
+
+  <div id="insp">
+    <div id="empty" class="hint">Select something in the Hierarchy to inspect it.</div>
+    <div id="sheet" style="display:none">
+      <h2>Inspector</h2>
+      <div class="row"><input id="dName"><button onclick="rename()">Rename</button></div>
+      <div class="hint" id="dMesh"></div>
+
+      <h2>Transform</h2>
+      <div class="row"><label>Position</label></div>
+      <div class="grid3">
+        <input id="px" type="number" step="0.1" title="x">
+        <input id="py" type="number" step="0.1" title="y">
+        <input id="pz" type="number" step="0.1" title="z">
+      </div>
+      <div class="row" style="margin-top:6px"><label>Rotation</label></div>
+      <div class="grid3">
+        <input id="rx" type="number" step="1" title="pitch degrees">
+        <input id="ry" type="number" step="1" title="yaw degrees">
+        <input id="rz" type="number" step="1" title="roll degrees">
+      </div>
+      <div class="row" style="margin-top:6px"><label>Scale</label></div>
+      <div class="grid3">
+        <input id="sx" type="number" step="0.1" title="width">
+        <input id="sy" type="number" step="0.1" title="height">
+        <input id="sz" type="number" step="0.1" title="depth">
+      </div>
+      <div class="row" style="margin-top:6px">
+        <input id="tint" type="color" style="max-width:52px">
+        <button class="go" style="flex:1" onclick="applyTransform()">Apply</button>
+      </div>
+
+      <h2>Animation</h2>
+      <div class="hint" id="animStat">-</div>
+      <div class="row"><select id="clipSel"></select></div>
+      <div class="row">
+        <button class="go" style="flex:1" onclick="playClip()">Play clip</button>
+        <button style="flex:1" onclick="stopClips()">Stop</button>
+      </div>
+      <h2>Live body anchors</h2>
+      <div class="hint" id="liveBones">No named bones</div>
+
+      <h2>Body</h2>
+      <div class="row"><label>kind</label>
+        <select id="bKind">
+          <option value="off">none (scenery)</option>
+          <option value="static">static (wall)</option>
+          <option value="dynamic">dynamic (pushable)</option>
+          <option value="sphere">sphere (rolls)</option>
+        </select></div>
+      <div class="row"><label>mass</label><input id="bMass" type="number" step="0.1" value="1"></div>
+      <div class="row"><label>grip</label><input id="bFric" type="number" step="0.05" value="0.4"></div>
+      <div class="row"><label>bounce</label><input id="bBounce" type="number" step="0.05" value="0.3"></div>
+      <button class="go" style="width:100%" onclick="fitBody()">Apply body</button>
+
+      <h2>Tags</h2>
+      <div id="labels"></div>
+      <div class="row"><input id="newLabel" placeholder="enemy"><button onclick="addLabel()">Add</button></div>
+
+      <h2>Wiring &mdash; Motion</h2>
+      <div id="motions"></div>
+      <div class="row"><input id="mClip" placeholder="clip name"></div>
+      <div class="row"><label>button</label><input id="mWire" placeholder="k or goal"></div>
+      <div class="row"><button class="go" style="flex:1" onclick="wireMotion()">Wire up</button>
+        <button class="bad" onclick="unwire('motions')">Clear</button></div>
+
+      <h2>Wiring &mdash; Noise</h2>
+      <div id="noises"></div>
+      <div class="row"><input id="nSound" placeholder="kick"></div>
+      <div class="row"><label>button</label><input id="nWire" placeholder="k or goal"></div>
+      <div class="row"><button class="go" style="flex:1" onclick="wireNoise()">Wire up</button>
+        <button class="bad" onclick="unwire('noises')">Clear</button></div>
+
+      <h2>Frame &mdash; bones</h2>
+      <div id="bones"></div>
+      <div class="row"><input id="bName" placeholder="LeftLeg">
+        <input id="bParent" placeholder="parent"></div>
+      <div class="hint">from x y z &rarr; to x y z (feet at y=0)</div>
+      <div class="grid3">
+        <input id="bfx" type="number" step="0.01" value="0">
+        <input id="bfy" type="number" step="0.01" value="0.9">
+        <input id="bfz" type="number" step="0.01" value="0">
+      </div>
+      <div class="grid3" style="margin-top:4px">
+        <input id="btx" type="number" step="0.01" value="0">
+        <input id="bty" type="number" step="0.01" value="0.45">
+        <input id="btz" type="number" step="0.01" value="0">
+      </div>
+      <div class="row" style="margin-top:4px">
+        <label>thick</label><input id="bth" type="number" step="0.01" value="0.08">
+        <label>swing</label><input id="bsw" type="number" step="0.1" value="1">
+      </div>
+      <div class="row">
+        <button class="go" style="flex:1" onclick="setBone()">Set bone</button>
+        <button onclick="defaultRig()">Default</button>
+        <button class="bad" onclick="clearRig()">Clear</button>
+      </div>
+
+      <h2>Bench test</h2>
+      <div class="row"><input id="pullWire" placeholder="k"><button onclick="pull()">Pull</button></div>
+      <div class="hint">Pull a wire to fire it here, without playing the game.</div>
+
+      <h2>&nbsp;</h2>
+      <button class="bad" style="width:100%" onclick="scrap()">Delete this object</button>
+    </div>
+  </div>
+
+  <div id="game">
+    <img id="view" alt="game">
+    <div id="gamebar">
+      <span id="gametool">Select</span>
+      <span id="playstat">edit</span>
+      <span id="tapHint">click an object to select it</span>
+    </div>
+  </div>
+
+  <div id="proj">
+    <div class="projcols">
+      <div>
+        <h2>Project &mdash; Files</h2>
+        <div class="row">
+          <button onclick="loadAssets(0)">List</button>
+          <button onclick="loadAssets(1)">Scan</button>
+          <button class="go" onclick="uploadAsset()">Upload</button>
+          <input type="file" id="upFile" style="display:none">
+          <span class="hint" id="scanHint">Scan looks inside models</span>
+        </div>
+        <div id="assetList"></div>
+        <div class="row"><input id="inFile" placeholder="assets/thing.obj"></div>
+        <div class="row"><label>size</label><input id="inSize" type="number" value="1" step="0.1">
+          <button class="go" onclick="bringIn()">Import</button></div>
+      </div>
+      <div>
+        <h2>Project &mdash; Prefabs</h2>
+        <div id="bpList"></div>
+        <div class="row"><input id="bpName" placeholder="save selected as...">
+          <button class="go" onclick="keepBlueprint()">Keep</button></div>
+      </div>
+      <div>
+        <h2>Project &mdash; Scenes</h2>
+        <div id="stageList"></div>
+        <div class="row"><input id="newStage" placeholder="Level 2">
+          <button onclick="addStage()">Add</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="console">
+    <div id="conbar"><b>Console</b><span id="conStat"></span>
+      <div style="flex:1"></div><button onclick="clearLog()">Clear</button></div>
+    <div id="conlog"></div>
+  </div>
+</div>
+
+<div id="rulesSheet">
+  <div class="sheetbar">
+    <b>Rules &mdash; when this, do that</b>
+    <div style="flex:1"></div>
+    <button onclick="hideRules()">Close</button>
+  </div>
+  <div class="sheetbody">
+    <div class="col">
+      <h2>The rules</h2>
+      <div id="ruleList"></div>
+      <h2>New rule</h2>
+      <div class="row"><input id="rName" placeholder="what it does"></div>
+      <div class="row"><label>when</label>
+        <select id="rTrigger">
+          <option value="start">start (once)</option>
+          <option value="every-frame">every frame</option>
+          <option value="key">key pressed</option>
+          <option value="key-held">key held</option>
+          <option value="collision">collision</option>
+          <option value="area-enter">enters area</option>
+          <option value="area-exit">leaves area</option>
+          <option value="timer">timer</option>
+          <option value="event">event</option>
+        </select></div>
+      <div class="row"><label>who</label><input id="rSubject" placeholder="space / Ball / Player"></div>
+      <div class="row"><label>with</label><input id="rOther" placeholder="Wall / Goal"></div>
+      <div class="row"><label>number</label><input id="rNumber" type="number" step="0.1" value="0"
+        title="timer seconds, or area radius"></div>
+      <button class="go" style="width:100%" onclick="addRule()">Add rule</button>
+    </div>
+
+    <div class="col">
+      <h2>Add to rule <span id="pickedRule" style="color:var(--accent)">&mdash;</span></h2>
+      <div class="hint">Pick a rule on the left, then add an IF or a DO.</div>
+
+      <h2>IF (optional)</h2>
+      <div class="row"><input id="cVar" placeholder="score"></div>
+      <div class="row"><label>is</label>
+        <select id="cCmp">
+          <option>==</option><option>!=</option><option>&lt;</option>
+          <option>&lt;=</option><option>&gt;</option><option>&gt;=</option>
+        </select>
+        <input id="cNum" type="number" step="1" value="0"></div>
+      <button style="width:100%" onclick="addCondition()">Add condition</button>
+
+      <h2>DO</h2>
+      <div class="row"><label>action</label>
+        <select id="aAct">
+          <option value="add">add to variable</option>
+          <option value="set">set variable</option>
+          <option value="move">move</option>
+          <option value="move-to">move to</option>
+          <option value="rotate">rotate</option>
+          <option value="spawn">spawn a copy</option>
+          <option value="destroy">destroy</option>
+          <option value="sound">play sound</option>
+          <option value="animate">play animation</option>
+          <option value="message">show message</option>
+          <option value="raise">raise event</option>
+          <option value="effect">play effect</option>
+          <option value="wait">wait</option>
+          <option value="end-game">end the game</option>
+        </select></div>
+      <div class="row"><label>on</label><input id="aTarget" placeholder="Ball / score"></div>
+      <div class="row"><label>name</label><input id="aText" placeholder="sound / clip / message"></div>
+      <div class="row"><label>amount</label><input id="aNum" type="number" step="1" value="1"></div>
+      <div class="grid3">
+        <input id="aax" type="number" step="0.1" value="0" title="x">
+        <input id="aay" type="number" step="0.1" value="0" title="y">
+        <input id="aaz" type="number" step="0.1" value="0" title="z">
+      </div>
+      <button class="go" style="width:100%;margin-top:6px" onclick="addAction()">Add action</button>
+    </div>
+
+    <div class="col">
+      <h2>Screen &mdash; panels</h2>
+      <div id="panelList"></div>
+      <div class="row"><input id="pName" placeholder="scoreLabel">
+        <select id="pKind">
+          <option value="label">label</option><option value="bar">bar</option>
+          <option value="box">box</option><option value="button">button</option>
+        </select></div>
+      <div class="row"><label>text</label><input id="pText" placeholder="Score: {score}"></div>
+      <div class="hint">{score} shows a variable's value</div>
+      <div class="row"><label>bar of</label><input id="pVar" placeholder="lives">
+        <input id="pMax" type="number" step="1" value="100" style="max-width:70px"></div>
+      <div class="row"><label>on press</label><input id="pEvent" placeholder="restart"></div>
+      <div class="row"><label>at</label>
+        <input id="pX" type="number" step="0.01" value="0.02" title="left 0..1">
+        <input id="pY" type="number" step="0.01" value="0.02" title="top 0..1"></div>
+      <div class="row"><label>size</label>
+        <input id="pW" type="number" step="0.01" value="0.3" title="width 0..1">
+        <input id="pH" type="number" step="0.01" value="0.08" title="height 0..1"></div>
+      <div class="row"><input id="pColor" type="color" value="#e6e6f2">
+        <input id="pBack" type="color" value="#1a1f26"></div>
+      <button class="go" style="width:100%" onclick="setPanel()">Place panel</button>
+
+      <h2>Controls</h2>
+      <div id="ctrlList"></div>
+      <div class="row"><input id="cName" placeholder="jump">
+        <input id="cLabel" placeholder="label"></div>
+      <div class="row"><label>key</label><input id="cKey" placeholder="space">
+        <label>pad</label><input id="cPad" placeholder="a"></div>
+      <div class="row"><label><input type="checkbox" id="cTouch" checked> on-screen button</label></div>
+      <div class="row"><label>at</label>
+        <input id="cX" type="number" step="0.01" value="0.85" title="x 0..1">
+        <input id="cY" type="number" step="0.01" value="0.78" title="y 0..1">
+        <input id="cSize" type="number" step="0.01" value="0.12" title="size"></div>
+      <div class="row"><label>clip</label>
+        <select id="cClipFile" onchange="clipsOf(this.value)"><option value="">-- model --</option></select></div>
+      <div class="row"><select id="cClip"><option value="">-- none --</option></select>
+        <input id="cTarget" placeholder="target character (optional)">
+        <input id="cSound" placeholder="sound"></div>
+      <div class="row">
+        <button class="go" style="flex:1" onclick="setControl()">Save control</button>
+        <button onclick="doControl()">Test</button></div>
+      <div class="row"><label><input type="checkbox" id="cStick" onchange="setStick()"> movement stick</label></div>
+
+      <h2>Effects</h2>
+      <div id="fxList"></div>
+      <div class="row"><input id="fxName" placeholder="explosion">
+        <button onclick="fireEffect()">Test</button></div>
+      <div class="row"><label>count</label><input id="fxCount" type="number" value="24">
+        <label>life</label><input id="fxLife" type="number" step="0.1" value="0.8"></div>
+      <div class="row"><label>speed</label><input id="fxSpeed" type="number" step="0.5" value="3">
+        <label>spread</label><input id="fxSpread" type="number" step="0.1" value="1"></div>
+      <div class="row"><label>gravity</label><input id="fxGrav" type="number" step="0.5" value="-4">
+        <label>size</label><input id="fxSize" type="number" step="0.02" value="0.12"></div>
+      <div class="row"><input id="fxFrom" type="color" value="#ffbf33">
+        <input id="fxTo" type="color" value="#801a00"></div>
+      <button class="go" style="width:100%" onclick="setEffect()">Save effect</button>
+
+      <h2>Variables</h2>
+      <div id="varList"></div>
+      <div class="row"><input id="vName" placeholder="score">
+        <input id="vNum" type="number" step="1" value="0" style="max-width:80px"></div>
+      <button style="width:100%" onclick="setVar()">Set</button>
+      <h2>State</h2>
+      <div class="hint" id="logicState">&mdash;</div>
+    </div>
+  </div>
+</div>
+<div id="flash"></div>
+
+<script>
+var picked = null;
+var tool = 'select';
+var pausedNow = false;
+
+function flash(msg, bad){
+  var f = document.getElementById('flash');
+  f.textContent = msg;
+  f.className = bad ? 'on err' : 'on';
+  clearTimeout(f.timer);
+  f.timer = setTimeout(function(){ f.className = ''; }, 1800);
+}
+function log(msg){
+  var box = document.getElementById('conlog');
+  var line = document.createElement('div');
+  var t = new Date();
+  var pad = function(n){ return (n < 10 ? '0' : '') + n; };
+  var stamp = document.createElement('span');
+  stamp.className = 't';
+  stamp.textContent = pad(t.getHours()) + ':' + pad(t.getMinutes()) + ':' + pad(t.getSeconds());
+  line.appendChild(stamp);
+  line.appendChild(document.createTextNode(msg));
+  box.appendChild(line);
+  while (box.children.length > 200) box.removeChild(box.firstChild);
+  box.scrollTop = box.scrollHeight;
+}
+function clearLog(){ document.getElementById('conlog').innerHTML = ''; }
+function api(path, params, done){
+  var q = [];
+  for (var k in params) q.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+  fetch('/api/' + path + (q.length ? '?' + q.join('&') : ''))
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d && d.ok === false){ flash(d.error || 'refused', true); log('error: ' + (d.error || path)); }
+      if (done) done(d);
+    })
+    .catch(function(){ flash('engine not answering', true); });
+}
+function toggleHier(){ document.getElementById('hier').classList.toggle('show'); }
+function hex(c){
+  var n = Math.max(0, Math.min(255, Math.round(c * 255))).toString(16);
+  return n.length < 2 ? '0' + n : n;
+}
+function snapGrid(){
+  if (!document.getElementById('snapOn').checked) return 0;
+  return parseFloat(document.getElementById('snapVal').value) || 0;
+}
+
+// --- Transform tools (Q/W/E/R) ---
+function setTool(name){
+  tool = name;
+  var tools = ['select', 'move', 'rotate', 'scale'];
+  var labels = {select: 'Select', move: 'Move', rotate: 'Rotate', scale: 'Scale'};
+  for (var i = 0; i < tools.length; i++){
+    document.getElementById('tool' + labels[tools[i]]).className = tools[i] === name ? 'on' : '';
+  }
+  document.getElementById('gametool').textContent = labels[name];
+  var hints = {
+    select: 'click an object to select it',
+    move: 'drag to move along the ground',
+    rotate: 'drag sideways to turn, up/down to tilt',
+    scale: 'drag up to grow, down to shrink'
+  };
+  document.getElementById('tapHint').textContent =
+    (picked ? picked + '  -  ' : '') + hints[name];
+}
+
+// --- Hierarchy ---
+function loadHier(){
+  api('rack', {}, function(d){
+    if (!d || !d.items) return;
+    document.getElementById('worldName').textContent = d.world || '';
+    var box = document.getElementById('hierList');
+    box.innerHTML = '';
+    d.items.forEach(function(it){
+      var row = document.createElement('div');
+      row.className = 'item' + (it.name === picked ? ' on' : '');
+      var pip = document.createElement('span');
+      pip.className = 'pip' + (it.body === 'static' ? ' solid' :
+                     (it.body && it.body !== '' ? ' moving' : ''));
+      row.appendChild(pip);
+      var label = document.createElement('span');
+      label.textContent = it.name;
+      row.appendChild(label);
+      var marks = [];
+      if (it.imported) marks.push('file');
+      if (it.labels) marks.push(it.labels + 'L');
+      if (it.motions) marks.push(it.motions + 'M');
+      if (it.noises) marks.push(it.noises + 'N');
+      if (marks.length){
+        var tail = document.createElement('span');
+        tail.style.cssText = 'margin-left:auto;color:#9a9a9a;font-size:10px';
+        tail.textContent = marks.join(' ');
+        row.appendChild(tail);
+      }
+      row.onclick = function(){ pick(it.name); };
+      box.appendChild(row);
+    });
+  });
+}
+function createObject(){
+  var kind = document.getElementById('createKind').value;
+  api('object/create', {kind: kind, x: 0, z: 0}, function(d){
+    if (d && d.ok){ log('created ' + d.name); loadHier(); pick(d.name); }
+  });
+}
+function duplicate(){
+  if (!need()) return;
+  api('object/duplicate', {name: picked}, function(d){
+    if (d && d.ok){ log('duplicated ' + picked + ' as ' + d.name); loadHier(); pick(d.name); }
+  });
+}
+function rename(){
+  if (!need()) return;
+  var to = document.getElementById('dName').value.trim();
+  if (!to) return;
+  api('object/rename', {name: picked, to: to}, function(d){
+    if (d && d.ok){ log('renamed ' + picked + ' to ' + to); picked = to; loadHier(); pick(to); }
+  });
+}
+
+// --- Transport: Play/Pause/Step ---
+function transportPlay(){
+  api('transport/play', {}, function(d){
+    if (d && d.ok){ log('play'); pollTransport(); }
+  });
+}
+function transportPause(){
+  api('transport/pause', {paused: pausedNow ? 0 : 1}, function(d){
+    if (d && d.ok){ log(d.paused ? 'paused' : 'resumed'); pollTransport(); }
+  });
+}
+function transportStep(){
+  api('transport/step', {}, function(d){ if (d && d.ok) log('stepped one frame'); });
+}
+function pollTransport(){
+  api('transport/state', {}, function(d){
+    if (!d) return;
+    pausedNow = !!d.paused;
+    document.getElementById('btnPause').className = pausedNow ? 'on' : '';
+    document.getElementById('btnPlay').className = d.playing ? 'on' : 'go';
+    document.getElementById('playstat').textContent =
+      d.playing ? (pausedNow ? 'paused' : 'playing') : 'edit';
+  });
+}
+
+// --- Inspector ---
+function pick(name){
+  picked = name;
+  api('dossier', {name: name}, function(d){
+    if (!d || !d.dossier) return;
+    var o = d.dossier;
+    document.getElementById('empty').style.display = 'none';
+    document.getElementById('sheet').style.display = '';
+    document.getElementById('dName').value = o.name;
+    document.getElementById('dMesh').textContent =
+      (o.mesh ? o.mesh : 'built-in shape') + '   - ' + o.span.toFixed(2) + 'm';
+    var ids = ['px', 'py', 'pz'], rids = ['rx', 'ry', 'rz'], sids = ['sx', 'sy', 'sz'];
+    for (var i = 0; i < 3; i++){
+      document.getElementById(ids[i]).value = o.position[i].toFixed(2);
+      document.getElementById(rids[i]).value = (o.rotation ? o.rotation[i] : 0).toFixed(1);
+      document.getElementById(sids[i]).value = o.scale[i].toFixed(2);
+    }
+    document.getElementById('tint').value =
+      '#' + hex(o.color[0]) + hex(o.color[1]) + hex(o.color[2]);
+    document.getElementById('bKind').value = o.body ? o.body.kind : 'off';
+    if (o.body){
+      document.getElementById('bMass').value = o.body.mass.toFixed(2);
+      document.getElementById('bFric').value = o.body.friction.toFixed(2);
+      document.getElementById('bBounce').value = o.body.bounce.toFixed(2);
+    }
+    var lab = document.getElementById('labels');
+    lab.innerHTML = '';
+    o.labels.forEach(function(t){
+      var chip = document.createElement('span');
+      chip.className = 'tag';
+      chip.textContent = t;
+      var x = document.createElement('b');
+      x.textContent = 'x';
+      x.onclick = function(){ api('unlabel', {name: picked, label: t}, function(){ pick(picked); loadHier(); }); };
+      chip.appendChild(x);
+      lab.appendChild(chip);
+    });
+    var bv = document.getElementById('bones');
+    bv.innerHTML = '';
+    (o.bones || []).forEach(function(b){
+      var w = document.createElement('div');
+      w.className = 'wire';
+      w.style.cursor = 'pointer';
+      var span = b.parent ? (b.name + ' <- ' + b.parent) : b.name;
+      var left = document.createElement('i');
+      left.textContent = span;
+      var right = document.createElement('span');
+      right.textContent = b.swing.toFixed(1);
+      w.appendChild(left);
+      w.appendChild(right);
+      // Click a bone to load it into the fields, so editing is a tweak
+      // rather than retyping the whole thing.
+      w.onclick = function(){
+        document.getElementById('bName').value = b.name;
+        document.getElementById('bParent').value = b.parent;
+        document.getElementById('bfx').value = b.from[0].toFixed(3);
+        document.getElementById('bfy').value = b.from[1].toFixed(3);
+        document.getElementById('bfz').value = b.from[2].toFixed(3);
+        document.getElementById('btx').value = b.to[0].toFixed(3);
+        document.getElementById('bty').value = b.to[1].toFixed(3);
+        document.getElementById('btz').value = b.to[2].toFixed(3);
+        document.getElementById('bth').value = b.thickness.toFixed(3);
+        document.getElementById('bsw').value = b.swing.toFixed(2);
+      };
+      bv.appendChild(w);
+    });
+
+    var mv = document.getElementById('motions');
+    mv.innerHTML = '';
+    o.motions.forEach(function(m){
+      var w = document.createElement('div');
+      w.className = 'wire';
+      var left = document.createElement('i');
+      left.textContent = m.clip;
+      var right = document.createElement('span');
+      right.textContent = '<- ' + m.wiring;
+      w.appendChild(left);
+      w.appendChild(right);
+      mv.appendChild(w);
+    });
+    var nv = document.getElementById('noises');
+    nv.innerHTML = '';
+    o.noises.forEach(function(n){
+      var w = document.createElement('div');
+      w.className = 'wire';
+      var left = document.createElement('i');
+      left.textContent = n.sound;
+      var right = document.createElement('span');
+      right.textContent = '<- ' + n.wiring;
+      w.appendChild(left);
+      w.appendChild(right);
+      nv.appendChild(w);
+    });
+    loadClips();
+    loadBones(name);
+    loadHier();
+    setTool(tool);
+  });
+}
+function loadBones(name){
+  api('object/bones', {name: name}, function(d){
+    var box = document.getElementById('liveBones');
+    if (!box) return;
+    box.innerHTML = '';
+    if (!d || !(d.bones || []).length){
+      box.textContent = 'No named bones';
+      return;
+    }
+    (d.bones || []).forEach(function(b){
+      var row = document.createElement('div');
+      row.className = 'wire';
+      var left = document.createElement('i');
+      left.textContent = b.name;
+      var right = document.createElement('span');
+      right.textContent = 'x ' + b.x.toFixed(2) + '  z ' + b.z.toFixed(2);
+      row.appendChild(left); row.appendChild(right); box.appendChild(row);
+    });
+  });
+}
+function loadClips(){
+  if (!picked) return;
+  api('object/clips', {name: picked}, function(d){
+    if (!d) return;
+    document.getElementById('animStat').textContent =
+      d.skeleton ? ((d.clips || []).length + ' clip(s) in the model file')
+                 : 'no skeleton in this object';
+    var sel = document.getElementById('clipSel');
+    sel.innerHTML = '';
+    (d.clips || []).forEach(function(c){
+      var o = document.createElement('option');
+      o.value = c;
+      o.textContent = c;
+      sel.appendChild(o);
+    });
+    document.getElementById('clipSel').disabled = !(d.clips || []).length;
+  });
+}
+function playClip(){
+  if (!need()) return;
+  var clip = document.getElementById('clipSel').value;
+  if (!clip){ flash('no clip to play', true); return; }
+  api('object/play-clip', {name: picked, clip: clip}, function(d){
+    if (d && d.ok) log('playing ' + clip + ' on ' + picked);
+  });
+}
+function stopClips(){
+  if (!need()) return;
+  api('object/stop-clips', {name: picked}, function(d){
+    if (d && d.ok) log(d.stopped ? 'stopped clips on ' + picked : 'nothing was playing');
+  });
+}
+
+function need(){ if (!picked){ flash('select something first', true); return false; } return true; }
+
+function applyTransform(){
+  if (!need()) return;
+  var c = document.getElementById('tint').value;
+  api('place', {name: picked,
+    px: document.getElementById('px').value, py: document.getElementById('py').value,
+    pz: document.getElementById('pz').value, sx: document.getElementById('sx').value,
+    sy: document.getElementById('sy').value, sz: document.getElementById('sz').value},
+    function(){
+      api('object/euler', {name: picked,
+        x: document.getElementById('rx').value, y: document.getElementById('ry').value,
+        z: document.getElementById('rz').value}, function(){
+          api('paint', {name: picked,
+            r: parseInt(c.substr(1, 2), 16) / 255, g: parseInt(c.substr(3, 2), 16) / 255,
+            b: parseInt(c.substr(5, 2), 16) / 255}, function(){ log('set transform of ' + picked); pick(picked); });
+        });
+    });
+}
+function fitBody(){
+  if (!need()) return;
+  api('fit-body', {name: picked, kind: document.getElementById('bKind').value,
+    mass: document.getElementById('bMass').value, friction: document.getElementById('bFric').value,
+    bounce: document.getElementById('bBounce').value}, function(d){
+      if (d && d.ok) log('set body of ' + picked);
+      pick(picked);
+    });
+}
+function addLabel(){
+  if (!need()) return;
+  var t = document.getElementById('newLabel').value.trim();
+  if (!t) return;
+  api('label', {name: picked, label: t}, function(){
+    document.getElementById('newLabel').value = '';
+    pick(picked);
+  });
+}
+function wireMotion(){
+  if (!need()) return;
+  api('wire-motion', {name: picked, clip: document.getElementById('mClip').value,
+    wiring: document.getElementById('mWire').value, loop: 0}, function(d){
+      if (d && d.ok){ log('wired motion on ' + picked); pick(picked); }
+    });
+}
+function wireNoise(){
+  if (!need()) return;
+  api('wire-noise', {name: picked, sound: document.getElementById('nSound').value,
+    wiring: document.getElementById('nWire').value}, function(d){
+      if (d && d.ok){ log('wired sound on ' + picked); pick(picked); }
+    });
+}
+function unwire(what){
+  if (!need()) return;
+  api('unwire', {name: picked, what: what}, function(){ pick(picked); });
+}
+function setBone(){
+  if (!need()) return;
+  api('set-bone', {name: picked,
+    bone: document.getElementById('bName').value,
+    parent: document.getElementById('bParent').value,
+    fx: document.getElementById('bfx').value, fy: document.getElementById('bfy').value,
+    fz: document.getElementById('bfz').value, tx: document.getElementById('btx').value,
+    ty: document.getElementById('bty').value, tz: document.getElementById('btz').value,
+    thickness: document.getElementById('bth').value,
+    swing: document.getElementById('bsw').value}, function(d){
+      if (d && d.ok){ log('set bone on ' + picked); pick(picked); }
+    });
+}
+function defaultRig(){
+  if (!need()) return;
+  api('default-rig', {name: picked, height: 1.7}, function(d){
+    if (d && d.ok){ log('fitted default frame on ' + picked); pick(picked); }
+  });
+}
+function clearRig(){
+  if (!need()) return;
+  api('clear-rig', {name: picked}, function(){ pick(picked); });
+}
+function scrap(){
+  if (!need()) return;
+  api('scrap', {name: picked}, function(d){
+    if (d && d.ok){
+      log('deleted ' + picked);
+      picked = null;
+      document.getElementById('sheet').style.display = 'none';
+      document.getElementById('empty').style.display = '';
+      loadHier();
+    }
+  });
+}
+function pull(){
+  api('pull', {wiring: document.getElementById('pullWire').value}, function(d){
+    if (!d) return;
+    log('pulled wire: fired ' + d.fired + (d.sounds.length ? ' sounds: ' + d.sounds.join(',') : ''));
+  });
+}
+function publish(){
+  api('publish', {folder: 'published'}, function(d){
+    if (d && d.ok) log('published to ' + d.folder + '/ - copy kimia_world in and run play.sh');
+  });
+}
+function bringIn(){
+  api('bring-in', {file: document.getElementById('inFile').value,
+    size: document.getElementById('inSize').value}, function(d){
+      if (d && d.ok){ log('imported as ' + d.name); loadHier(); pick(d.name); }
+    });
+}
+
+// --- Project ---
+function loadLibrary(){
+  api('library', {}, function(d){
+    if (!d) return;
+    var st = document.getElementById('stageList');
+    st.innerHTML = '';
+    (d.stages || []).forEach(function(name){
+      var el = document.createElement('div');
+      el.className = 'item' + (name === d.stage ? ' on' : '');
+      var label = document.createElement('span');
+      label.textContent = name;
+      el.appendChild(label);
+      if (name !== d.stage){
+        var x = document.createElement('span');
+        x.textContent = 'x';
+        x.style.cssText = 'margin-left:auto;color:#9a9a9a';
+        x.onclick = function(ev){
+          ev.stopPropagation();
+          api('drop-stage', {stage: name}, loadLibrary);
+        };
+        el.appendChild(x);
+      }
+      el.onclick = function(){
+        api('go-stage', {stage: name}, function(r){
+          if (r && r.ok){ picked = null; log('opened scene ' + name); loadHier(); loadLibrary(); }
+        });
+      };
+      st.appendChild(el);
+    });
+
+    var bp = document.getElementById('bpList');
+    bp.innerHTML = '';
+    if (!(d.blueprints || []).length){
+      bp.innerHTML = '<div class="hint">Select an object and Keep it, then ' +
+        'stamp copies without setting it up again.</div>';
+    }
+    (d.blueprints || []).forEach(function(name){
+      var el = document.createElement('div');
+      el.className = 'item';
+      var label = document.createElement('span');
+      label.textContent = name;
+      el.appendChild(label);
+      var x = document.createElement('span');
+      x.textContent = 'x';
+      x.style.cssText = 'margin-left:auto;color:#9a9a9a';
+      x.onclick = function(ev){
+        ev.stopPropagation();
+        api('forget', {blueprint: name}, loadLibrary);
+      };
+      el.appendChild(x);
+      el.onclick = function(){
+        api('stamp', {blueprint: name, x: 0, y: 0, z: 0}, function(r){
+          if (r && r.ok){ log('stamped ' + r.name); loadHier(); pick(r.name); }
+        });
+      };
+      bp.appendChild(el);
+    });
+  });
+}
+function keepBlueprint(){
+  if (!need()) return;
+  var as = document.getElementById('bpName').value || picked;
+  api('keep', {name: picked, as: as}, function(d){
+    if (d && d.ok){
+      document.getElementById('bpName').value = '';
+      log('kept ' + picked + ' as ' + d.name);
+      loadLibrary();
+    }
+  });
+}
+function addStage(){
+  var name = document.getElementById('newStage').value.trim();
+  if (!name) return;
+  api('add-stage', {stage: name}, function(d){
+    if (d && d.ok){ document.getElementById('newStage').value = ''; loadLibrary(); }
+  });
+}
+
+// --- Files the user dropped into the asset folder ---
+var scanned = [];
+var deepScan = 0;
+
+function loadAssets(deep){
+  deepScan = deep ? 1 : 0;
+  document.getElementById('scanHint').textContent = deep ? 'reading models...' : '';
+  api('assets', {deep: deep ? 1 : 0}, function(d){
+    if (!d) return;
+    scanned = d.assets || [];
+    document.getElementById('scanHint').textContent =
+      scanned.length + ' file' + (scanned.length === 1 ? '' : 's');
+    var box = document.getElementById('assetList');
+    box.innerHTML = '';
+    if (!scanned.length){
+      box.innerHTML = '<div class="hint">Copy models, images and sounds into ' +
+        'the assets folder, then press List.</div>';
+    }
+    scanned.forEach(function(a){
+      var el = document.createElement('div');
+      el.className = 'item';
+      var pip = document.createElement('span');
+      pip.className = 'pip' + (a.kind === 'model' ? ' solid' : (a.kind === 'texture' ? ' moving' : ''));
+      el.appendChild(pip);
+      var label = document.createElement('span');
+      label.textContent = a.file;
+      label.style.cursor = 'pointer';
+      label.title = 'open';
+      label.onclick = function(){ useAsset(a); };
+      el.appendChild(label);
+      var tail = [];
+      if (a.skeleton) tail.push(a.bones + ' bones');
+      if (a.clips && a.clips.length) tail.push(a.clips.length + ' clips');
+      if (a.note) tail.push('!');
+      if (tail.length){
+        var mark = document.createElement('span');
+        mark.style.cssText = 'margin-left:auto;color:#9a9a9a;font-size:10px';
+        mark.textContent = tail.join(' ');
+        el.appendChild(mark);
+      }
+      var ren = document.createElement('button');
+      ren.textContent = 'Rename';
+      ren.onclick = function(){ renameAsset(a.file, label); };
+      el.appendChild(ren);
+      var del = document.createElement('button');
+      del.textContent = 'x';
+      del.className = 'bad';
+      del.title = 'delete';
+      del.onclick = function(){ deleteAsset(a.file); };
+      el.appendChild(del);
+      box.appendChild(el);
+    });
+    fillClipFiles();
+  });
+}
+
+// Clicking a file does the obvious thing for its kind: a model comes into
+// the scene, an image goes onto whatever is selected.
+function useAsset(a){
+  if (a.kind === 'model'){
+    // Keep the scene portable: `file` is relative to the configured assets
+    // folder. `path` is only the server's filesystem location.
+    api('bring-in', {file: a.file, size: 1}, function(d){
+      if (d && d.ok){ log('imported ' + d.name); loadHier(); pick(d.name); }
+    });
+    return;
+  }
+  if (a.kind === 'texture'){
+    if (!picked){ flash('select an object first, then click an image', true); return; }
+    api('skin', {name: picked, image: a.file}, function(d){
+      if (d && d.ok) log('painted ' + a.file + ' onto ' + picked);
+    });
+    return;
+  }
+  flash(a.file + ' is a sound - use it in a control or a rule');
+}
+
+// Inline rename: the name becomes a field; Enter commits, Escape cancels.
+function renameAsset(file, label){
+  var input = document.createElement('input');
+  input.value = file.indexOf('/') < 0 ? file : file.substr(file.lastIndexOf('/') + 1);
+  input.style.cssText = 'flex:1;min-width:40px';
+  var done = false;
+  function cancel(){
+    if (done) return;
+    done = true;
+    input.parentNode.replaceChild(label, input);
+  }
+  function commit(){
+    if (done) return;
+    done = true;
+    var to = input.value.trim();
+    input.parentNode.replaceChild(label, input);
+    if (!to || to === file) return;
+    api('asset/rename', {file: file, to: to}, function(d){
+      if (d && d.ok) log('renamed ' + file + ' to ' + to);
+      loadAssets(deepScan);
+    });
+  }
+  input.onkeydown = function(e){
+    if (e.key === 'Enter') commit();
+    else if (e.key === 'Escape') cancel();
+    e.stopPropagation();
+  };
+  input.onblur = cancel;
+  label.parentNode.replaceChild(input, label);
+  input.focus();
+  input.select();
+}
+function deleteAsset(file){
+  if (!confirm('Delete ' + file + '?')) return;
+  api('asset/delete', {file: file}, function(d){
+    if (d && d.ok){ log('deleted ' + file); loadAssets(deepScan); }
+  });
+}
+// Upload posts the raw bytes; the name rides in the query. No overwrite:
+// a taken name is refused, rename or delete it first.
+function uploadAsset(){
+  var picker = document.getElementById('upFile');
+  picker.onchange = function(){
+    if (!picker.files || !picker.files.length) return;
+    var f = picker.files[0];
+    log('uploading ' + f.name + ' (' + f.size + ' bytes)...');
+    fetch('/api/asset/upload?name=' + encodeURIComponent(f.name), {method: 'POST', body: f})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        picker.value = '';
+        if (d && d.ok){ log('uploaded ' + d.file); loadAssets(deepScan); }
+        else {
+          flash((d && d.error) || 'upload refused', true);
+          log('upload refused: ' + ((d && d.error) || '?'));
+        }
+      })
+      .catch(function(){ picker.value = ''; flash('engine not answering', true); });
+  };
+  picker.click();
+}
+
+// --- Rules ---
+var pickedRule = -1;
+
+function showRules(){
+  document.getElementById('rulesSheet').classList.add('show');
+  loadRules();
+  loadPanels();
+  loadEffects();
+  loadControls();
+}
+function hideRules(){ document.getElementById('rulesSheet').classList.remove('show'); }
+
+function loadRules(){
+  api('rules', {}, function(d){
+    if (!d || !d.rules) return;
+    var box = document.getElementById('ruleList');
+    box.innerHTML = '';
+    if (!d.rules.length){
+      box.innerHTML = '<div class="hint">No rules yet. A game is a list of ' +
+        '"when this happens, do that".</div>';
+    }
+    d.rules.forEach(function(r){
+      var el = document.createElement('div');
+      el.className = 'rule' + (r.index === pickedRule ? ' on' : '') + (r.enabled ? '' : ' off');
+      var head = document.createElement('div');
+      head.textContent = r.reads;
+      el.appendChild(head);
+      var tools = document.createElement('div');
+      tools.className = 'tools';
+      function tool(label, fn){
+        var b = document.createElement('button');
+        b.textContent = label;
+        b.onclick = function(ev){ ev.stopPropagation(); fn(); };
+        tools.appendChild(b);
+      }
+      tool(r.enabled ? 'off' : 'on', function(){
+        api('toggle-rule', {index: r.index, on: r.enabled ? 0 : 1}, loadRules); });
+      tool('^', function(){ api('move-rule', {index: r.index, dir: 'up'}, loadRules); });
+      tool('v', function(){ api('move-rule', {index: r.index, dir: 'down'}, loadRules); });
+      tool('x', function(){ api('drop-rule', {index: r.index}, function(){
+        pickedRule = -1; loadRules(); }); });
+      el.appendChild(tools);
+      el.onclick = function(){
+        pickedRule = r.index;
+        document.getElementById('pickedRule').textContent = r.name || ('#' + r.index);
+        loadRules();
+      };
+      box.appendChild(el);
+    });
+
+    var vs = document.getElementById('varList');
+    vs.innerHTML = '';
+    (d.variables || []).forEach(function(v){
+      var el = document.createElement('div');
+      el.className = 'wire';
+      var left = document.createElement('i');
+      left.textContent = v.name;
+      var right = document.createElement('span');
+      right.textContent = v.isText ? v.text : v.number.toFixed(2);
+      el.appendChild(left);
+      el.appendChild(right);
+      el.style.cursor = 'pointer';
+      el.onclick = function(){ api('drop-var', {variable: v.name}, loadRules); };
+      vs.appendChild(el);
+    });
+
+    var state = d.finished ? (d.won ? 'game won' : 'game lost') : 'running';
+    if (d.message) state += '  -  "' + d.message + '"';
+    document.getElementById('logicState').textContent = state;
+  });
+}
+
+function addRule(){
+  api('add-rule', {rulename: document.getElementById('rName').value || 'rule',
+    trigger: document.getElementById('rTrigger').value,
+    subject: document.getElementById('rSubject').value,
+    other: document.getElementById('rOther').value,
+    number: document.getElementById('rNumber').value}, function(d){
+      if (d && d.ok){
+        pickedRule = d.index;
+        document.getElementById('rName').value = '';
+        log('rule added - now give it an action');
+        loadRules();
+      }
+    });
+}
+function needRule(){
+  if (pickedRule < 0){ flash('pick a rule first', true); return false; }
+  return true;
+}
+function addCondition(){
+  if (!needRule()) return;
+  api('add-condition', {index: pickedRule, variable: document.getElementById('cVar').value,
+    compare: document.getElementById('cCmp').value,
+    number: document.getElementById('cNum').value}, function(d){
+      if (d && d.ok){ log('condition added'); loadRules(); }
+    });
+}
+function addAction(){
+  if (!needRule()) return;
+  api('add-action', {index: pickedRule, act: document.getElementById('aAct').value,
+    target: document.getElementById('aTarget').value,
+    text: document.getElementById('aText').value,
+    number: document.getElementById('aNum').value,
+    ax: document.getElementById('aax').value, ay: document.getElementById('aay').value,
+    az: document.getElementById('aaz').value}, function(d){
+      if (d && d.ok){ log('action added'); loadRules(); }
+    });
+}
+function loadPanels(){
+  api('panels', {}, function(d){
+    if (!d) return;
+    var box = document.getElementById('panelList');
+    box.innerHTML = '';
+    if (!(d.panels || []).length){
+      box.innerHTML = '<div class="hint">Nothing on screen yet. A label ' +
+        'showing {score}, or a health bar, is a good start.</div>';
+    }
+    (d.panels || []).forEach(function(p){
+      var el = document.createElement('div');
+      el.className = 'wire';
+      el.style.cursor = 'pointer';
+      var what = p.kind === 'bar' ? ('bar of ' + p.variable) : (p.text || p.kind);
+      var left = document.createElement('i');
+      left.textContent = p.name;
+      var right = document.createElement('span');
+      right.textContent = what;
+      el.appendChild(left);
+      el.appendChild(right);
+      el.onclick = function(){
+        // Load it back into the fields so editing is a tweak.
+        document.getElementById('pName').value = p.name;
+        document.getElementById('pKind').value = p.kind;
+        document.getElementById('pText').value = p.text;
+        document.getElementById('pVar').value = p.variable;
+        document.getElementById('pMax').value = p.maximum;
+        document.getElementById('pEvent').value = p.event;
+        document.getElementById('pX').value = p.x.toFixed(3);
+        document.getElementById('pY').value = p.y.toFixed(3);
+        document.getElementById('pW').value = p.w.toFixed(3);
+        document.getElementById('pH').value = p.h.toFixed(3);
+      };
+      var x = document.createElement('b');
+      x.textContent = 'x';
+      x.style.cssText = 'cursor:pointer;margin-left:8px;color:#9a9a9a';
+      x.onclick = function(ev){
+        ev.stopPropagation();
+        api('drop-panel', {panel: p.name}, loadPanels);
+      };
+      el.appendChild(x);
+      box.appendChild(el);
+    });
+  });
+}
+function setPanel(){
+  var c = document.getElementById('pColor').value;
+  var b = document.getElementById('pBack').value;
+  var hexPart = function(v, at){ return parseInt(v.substr(at, 2), 16) / 255; };
+  api('set-panel', {panel: document.getElementById('pName').value,
+    kind: document.getElementById('pKind').value,
+    text: document.getElementById('pText').value,
+    variable: document.getElementById('pVar').value,
+    maximum: document.getElementById('pMax').value,
+    event: document.getElementById('pEvent').value,
+    x: document.getElementById('pX').value, y: document.getElementById('pY').value,
+    w: document.getElementById('pW').value, h: document.getElementById('pH').value,
+    r: hexPart(c, 1), g: hexPart(c, 3), b: hexPart(c, 5),
+    br: hexPart(b, 1), bg: hexPart(b, 3), bb: hexPart(b, 5)}, function(d){
+      if (d && d.ok){ log('panel placed'); loadPanels(); }
+    });
+}
+
+function loadEffects(){
+  api('effects', {}, function(d){
+    if (!d) return;
+    var box = document.getElementById('fxList');
+    box.innerHTML = '';
+    if (!(d.effects || []).length){
+      box.innerHTML = '<div class="hint">No effects yet. An explosion or a ' +
+        'puff of dust makes a game read as a game.</div>';
+    }
+    (d.effects || []).forEach(function(fx){
+      var el = document.createElement('div');
+      el.className = 'wire';
+      el.style.cursor = 'pointer';
+      var left = document.createElement('i');
+      left.textContent = fx.name;
+      var right = document.createElement('span');
+      right.textContent = fx.count + ' x ' + fx.life.toFixed(1) + 's';
+      el.appendChild(left);
+      el.appendChild(right);
+      el.onclick = function(){
+        document.getElementById('fxName').value = fx.name;
+        document.getElementById('fxCount').value = fx.count;
+        document.getElementById('fxLife').value = fx.life;
+        document.getElementById('fxSpeed').value = fx.speed;
+        document.getElementById('fxSpread').value = fx.spread;
+        document.getElementById('fxGrav').value = fx.gravity;
+        document.getElementById('fxSize').value = fx.size;
+      };
+      box.appendChild(el);
+    });
+  });
+}
+function setEffect(){
+  var f = document.getElementById('fxFrom').value;
+  var t = document.getElementById('fxTo').value;
+  var part = function(v, at){ return parseInt(v.substr(at, 2), 16) / 255; };
+  api('set-effect', {effect: document.getElementById('fxName').value,
+    count: document.getElementById('fxCount').value,
+    life: document.getElementById('fxLife').value,
+    speed: document.getElementById('fxSpeed').value,
+    spread: document.getElementById('fxSpread').value,
+    gravity: document.getElementById('fxGrav').value,
+    size: document.getElementById('fxSize').value,
+    r: part(f, 1), g: part(f, 3), b: part(f, 5),
+    r2: part(t, 1), g2: part(t, 3), b2: part(t, 5)}, function(d){
+      if (d && d.ok){ log('effect saved'); loadEffects(); }
+    });
+}
+function fireEffect(){
+  api('fire-effect', {effect: document.getElementById('fxName').value, x: 0, y: 1, z: 0},
+    function(d){ if (d && d.ok) log(d.live + ' particles in flight'); });
+}
+
+function fillClipFiles(){
+  var sel = document.getElementById('cClipFile');
+  if (!sel) return;
+  var keep = sel.value;
+  sel.innerHTML = '<option value="">-- model --</option>';
+  scanned.forEach(function(a){
+    if (a.kind !== 'model' || !a.clips || !a.clips.length) return;
+    var o = document.createElement('option');
+    // Controls store the asset-relative name, never an absolute server path.
+    o.value = a.file;
+    o.textContent = a.file + ' (' + a.clips.length + ')';
+    sel.appendChild(o);
+  });
+  sel.value = keep;
+  clipsOf(sel.value);
+}
+function clipsOf(path){
+  var sel = document.getElementById('cClip');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">-- none --</option>';
+  scanned.forEach(function(a){
+    if (a.file !== path) return;
+    (a.clips || []).forEach(function(c){
+      var o = document.createElement('option');
+      o.value = c;
+      o.textContent = c;
+      sel.appendChild(o);
+    });
+  });
+}
+
+// --- Controls ---
+function loadControls(){
+  api('controls', {}, function(d){
+    if (!d) return;
+    document.getElementById('cStick').checked = !!d.stick;
+    var box = document.getElementById('ctrlList');
+    box.innerHTML = '';
+    if (!(d.controls || []).length){
+      box.innerHTML = '<div class="hint">No controls yet. One action can be ' +
+        'a key, a screen button and a pad button at once.</div>';
+    }
+    (d.controls || []).forEach(function(c){
+      var el = document.createElement('div');
+      el.className = 'wire';
+      el.style.cursor = 'pointer';
+      var how = (c.bindings || []).map(function(b){
+        return b.source === 'touch' ? 'screen' : (b.source + ':' + b.code);
+      }).join(' ');
+      var left = document.createElement('i');
+      left.textContent = c.name + (c.clip ? ' -> ' + c.clip : '');
+      var right = document.createElement('span');
+      right.textContent = how || 'unbound';
+      el.appendChild(left);
+      el.appendChild(right);
+      el.onclick = function(){
+        document.getElementById('cName').value = c.name;
+        document.getElementById('cLabel').value = c.label;
+        document.getElementById('cX').value = c.x.toFixed(2);
+        document.getElementById('cY').value = c.y.toFixed(2);
+        document.getElementById('cSize').value = c.size.toFixed(2);
+        document.getElementById('cSound').value = c.sound;
+        document.getElementById('cClipFile').value = c.clipFile;
+        clipsOf(c.clipFile);
+        document.getElementById('cClip').value = c.clip;
+        document.getElementById('cTarget').value = c.target || '';
+        var key = '', pad = '', touch = false;
+        (c.bindings || []).forEach(function(b){
+          if (b.source === 'key') key = b.code;
+          if (b.source === 'pad') pad = b.code;
+          if (b.source === 'touch') touch = true;
+        });
+        document.getElementById('cKey').value = key;
+        document.getElementById('cPad').value = pad;
+        document.getElementById('cTouch').checked = touch;
+      };
+      var x = document.createElement('b');
+      x.textContent = 'x';
+      x.style.cssText = 'cursor:pointer;margin-left:8px;color:#9a9a9a';
+      x.onclick = function(ev){
+        ev.stopPropagation();
+        api('drop-control', {control: c.name}, loadControls);
+      };
+      el.appendChild(x);
+      box.appendChild(el);
+    });
+  });
+}
+function setControl(){
+  api('set-control', {control: document.getElementById('cName').value,
+    label: document.getElementById('cLabel').value,
+    key: document.getElementById('cKey').value,
+    pad: document.getElementById('cPad').value,
+    touch: document.getElementById('cTouch').checked ? 1 : 0,
+    x: document.getElementById('cX').value, y: document.getElementById('cY').value,
+    size: document.getElementById('cSize').value,
+    clipfile: document.getElementById('cClipFile').value,
+    clip: document.getElementById('cClip').value,
+    target: document.getElementById('cTarget').value,
+    sound: document.getElementById('cSound').value}, function(d){
+      if (d && d.ok){ log('control saved'); loadControls(); }
+    });
+}
+function doControl(){
+  api('do', {control: document.getElementById('cName').value}, function(d){
+    if (d && d.ok) log('fired control');
+  });
+}
+function setStick(){
+  api('stick', {on: document.getElementById('cStick').checked ? 1 : 0}, function(){});
+}
+
+function setVar(){
+  api('set-var', {variable: document.getElementById('vName').value,
+    number: document.getElementById('vNum').value}, function(d){
+      if (d && d.ok) loadRules();
+    });
+}
+
+// --- Touching the picture ---
+// A tap selects; a drag edits with the active tool. The same handlers
+// serve mouse and touch, because the editor has to work on a phone and
+// on a desktop without two code paths.
+(function(){
+  var view = document.getElementById('view');
+  var dragging = false, lastX = 0, lastY = 0, moved = 0, downAt = 0;
+
+  // The image is scaled to fit, so a screen pixel is not a frame pixel.
+  function toFrame(ev){
+    var r = view.getBoundingClientRect();
+    var p = (ev.touches && ev.touches[0]) ? ev.touches[0] : ev;
+    return {
+      x: (p.clientX - r.left) / r.width * (view.naturalWidth || r.width),
+      y: (p.clientY - r.top) / r.height * (view.naturalHeight || r.height)
+    };
+  }
+
+  function begin(ev){
+    var p = toFrame(ev);
+    dragging = true; lastX = p.x; lastY = p.y; moved = 0; downAt = Date.now();
+    ev.preventDefault();
+  }
+  function move(ev){
+    if (!dragging) return;
+    var p = toFrame(ev);
+    var dx = p.x - lastX, dy = p.y - lastY;
+    moved += Math.abs(dx) + Math.abs(dy);
+    // Only edit once the finger has really moved, or every tap would
+    // nudge the object slightly.
+    if (picked && moved > 6 && tool !== 'select'){
+      if (tool === 'move'){
+        api('drag', {name: picked, fromx: lastX, fromy: lastY, tox: p.x, toy: p.y,
+                     grid: snapGrid()}, function(d){
+          if (d && d.ok && d.position){
+            document.getElementById('px').value = d.position[0].toFixed(2);
+            document.getElementById('py').value = d.position[1].toFixed(2);
+            document.getElementById('pz').value = d.position[2].toFixed(2);
+          }
+        });
+      } else if (tool === 'rotate'){
+        // Sideways turns the table, up/down tilts; snapping steps 15 degrees.
+        var dyaw = dx * 0.4, dpitch = -dy * 0.4;
+        if (document.getElementById('snapOn').checked){
+          dyaw = Math.round(dyaw / 15) * 15;
+          dpitch = Math.round(dpitch / 15) * 15;
+        }
+        if (dyaw || dpitch){
+          api('object/rotate', {name: picked, dyaw: dyaw, dpitch: dpitch}, function(d){
+            if (d && d.ok && d.rotation){
+              document.getElementById('rx').value = d.rotation[0].toFixed(1);
+              document.getElementById('ry').value = d.rotation[1].toFixed(1);
+              document.getElementById('rz').value = d.rotation[2].toFixed(1);
+            }
+          });
+        }
+      } else if (tool === 'scale'){
+        var factor = 1 - dy * 0.004;
+        if (factor > 0.05 && factor < 20){
+          api('object/scale', {name: picked, factor: factor}, function(d){
+            if (d && d.ok && d.scale){
+              document.getElementById('sx').value = d.scale[0].toFixed(2);
+              document.getElementById('sy').value = d.scale[1].toFixed(2);
+              document.getElementById('sz').value = d.scale[2].toFixed(2);
+            }
+          });
+        }
+      }
+      lastX = p.x; lastY = p.y;
+    }
+    ev.preventDefault();
+  }
+  function end(ev){
+    if (!dragging) return;
+    dragging = false;
+    // A short press that barely moved is a TAP: select what is under it.
+    if (moved <= 6 && Date.now() - downAt < 600){
+      api('tap', {x: lastX, y: lastY}, function(d){
+        if (!d) return;
+        if (d.name){
+          pick(d.name);
+        } else {
+          document.getElementById('tapHint').textContent = 'nothing there';
+        }
+      });
+    }
+    if (ev.cancelable) ev.preventDefault();
+  }
+
+  view.addEventListener('mousedown', begin);
+  view.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  view.addEventListener('touchstart', begin, {passive: false});
+  view.addEventListener('touchmove', move, {passive: false});
+  view.addEventListener('touchend', end, {passive: false});
+})();
+
+// Keyboard: Q/W/E/R switch tools, Ctrl+D duplicates, Delete removes.
+// Typing in a field never triggers these.
+document.addEventListener('keydown', function(e){
+  var tag = (e.target && e.target.tagName) || '';
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')){
+    e.preventDefault();
+    duplicate();
+    return;
+  }
+  if (e.key === 'Delete' || e.key === 'Backspace'){ scrap(); return; }
+  var k = (e.key || '').toLowerCase();
+  if (k === 'q') setTool('select');
+  else if (k === 'w') setTool('move');
+  else if (k === 'e') setTool('rotate');
+  else if (k === 'r') setTool('scale');
+  else if (k === ' '){ e.preventDefault(); transportPlay(); }
+});
+
+setInterval(function(){
+  document.getElementById('view').src = '/frame.jpg?t=' + Date.now();
+}, 500);
+setInterval(function(){
+  api('pulse', {}, function(d){
+    if (!d) return;
+    var s = d.stats || '';
+    if (d.clips && d.clips.length) s += '   > ' + d.clips.join(' ');
+    document.getElementById('conStat').textContent = s;
+  });
+  pollTransport();
+}, 1000);
+if (window.innerWidth <= 900) document.getElementById('hierBtn').style.display = '';
+setTool('select');
+loadHier();
+loadLibrary();
+loadAssets(0);
+pollTransport();
+log('KIMIA editor ready');
+</script>
+</body>
+</html>

@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>KIMIA World</title>
+<style>
+body{background:#101014;color:#e8e8ec;font-family:system-ui,sans-serif;margin:0;padding:12px;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+h1{font-size:20px;margin:4px 0}
+.hint{color:#9a9aa5;font-size:13px;margin:4px 0 10px}
+#frame{width:100%;max-width:720px;display:block;background:#000;border-radius:8px}
+#stats{font-family:monospace;font-size:12px;color:#7fd47f;margin:8px 0;white-space:pre-wrap}
+#menutitle{font-size:16px;font-weight:600;margin:10px 0 4px}
+#pad,#staticpad{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0;max-width:720px}
+.btn{min-width:52px;min-height:44px;padding:8px 12px;font-size:16px;border:1px solid #3a3a44;border-radius:10px;background:#23232c;color:#e8e8ec;text-align:center;cursor:pointer}
+.btn:active{background:#3d4a7a}
+#look{width:100%;max-width:720px;height:120px;border:1px dashed #3a3a44;border-radius:10px;margin:10px 0;display:flex;align-items:center;justify-content:center;color:#7a7a88;font-size:14px;touch-action:none}
+#splash{position:fixed;inset:0;background:#000;display:none;align-items:center;justify-content:center;z-index:99;flex-direction:column}
+#splash video{width:100%;height:100%;object-fit:contain;background:#000}
+#skip{position:fixed;right:16px;bottom:16px;z-index:100;padding:10px 18px;font-size:15px;border:1px solid #55555f;border-radius:10px;background:rgba(20,20,26,.85);color:#e8e8ec;cursor:pointer}
+#benchlink{display:inline-block;margin:0 0 10px;padding:7px 16px;background:#22272e;color:#d9a441;border:1px solid #333b45;border-radius:6px;text-decoration:none;font-size:14px}
+#benchlink:hover{border-color:#d9a441}
+</style>
+</head>
+<body>
+<div id="splash"><video id="introfilm" playsinline autoplay muted preload="auto"><source src="/intro.mp4" type="video/mp4"></video><div id="skip">رد کردن / SKIP</div></div>
+<h1>KIMIA World</h1>
+<a id="benchlink" href="/bench">&#9881; Editor &mdash; ویرایشگر</a>
+<div class="hint">everything is menus: tap 1-9 for the options, arrows move, Shift = fine, r resets, b opens the menu, Space = jump (or hold to charge a shot), hold c = dribble, hold q/e = curl, p = pass</div>
+<img id="frame" alt="engine frame">
+<div id="stats">waiting for first frame...</div>
+<div id="menutitle"></div>
+<div id="pad"></div>
+<div id="staticpad">
+</div>
+<div id="look">drag here to look around</div>
+<script>
+function post(q){fetch('/input?'+q,{method:'POST'}).catch(function(){});}
+function bindPad(el){
+  el.addEventListener('pointerdown',function(e){
+    var b=e.target.closest('.btn');if(!b)return;
+    e.preventDefault();
+    if(b.getAttribute('data-hold')==='1'){post('key='+encodeURIComponent(b.getAttribute('data-key'))+'&down=1');}
+  });
+  el.addEventListener('pointerup',function(e){
+    var b=e.target.closest('.btn');if(!b)return;
+    var k=encodeURIComponent(b.getAttribute('data-key'));
+    if(b.getAttribute('data-hold')==='1'){post('key='+k+'&down=0');}
+    else{post('tap='+k);}
+  });
+  el.addEventListener('pointercancel',function(e){
+    var b=e.target.closest('.btn');if(!b)return;
+    if(b.getAttribute('data-hold')==='1'){post('key='+encodeURIComponent(b.getAttribute('data-key'))+'&down=0');}
+  });
+}
+bindPad(document.getElementById('staticpad'));
+bindPad(document.getElementById('pad'));
+function escAttr(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;');}
+var lastMenu='';
+function showMenu(){
+  fetch('/menu').then(function(r){return r.json();}).then(function(m){
+    var title=document.getElementById('menutitle');
+    var pad=document.getElementById('pad');
+    var staticPad=document.getElementById('staticpad');
+    if(m&&m.title){
+      title.textContent=m.title;
+      title.style.display='block';
+      var html='';
+      var i;
+      for(i=0;i<m.holds.length;i++){
+        html+='<div class="btn" data-key="'+escAttr(m.holds[i][1])+'" data-hold="1">'+escAttr(m.holds[i][0])+'</div>';
+      }
+      for(i=0;i<m.taps.length;i++){
+        html+='<div class="btn" data-key="'+escAttr(m.taps[i][1])+'" data-hold="0">'+escAttr(m.taps[i][0])+'</div>';
+      }
+      if(html!==lastMenu){pad.innerHTML=html;lastMenu=html;}
+      pad.style.display='flex';
+      staticPad.style.display='none';
+    }else{
+      title.style.display='none';
+      pad.style.display='none';
+      staticPad.style.display='flex';
+    }
+  }).catch(function(){});
+}
+setInterval(showMenu,300);
+showMenu();
+var look=document.getElementById('look');
+var dragging=false,lastX=0,lastY=0;
+look.addEventListener('pointerdown',function(e){dragging=true;lastX=e.clientX;lastY=e.clientY;look.setPointerCapture(e.pointerId);});
+look.addEventListener('pointermove',function(e){if(!dragging)return;
+  var dx=e.clientX-lastX,dy=e.clientY-lastY;lastX=e.clientX;lastY=e.clientY;
+  post('lookX='+dx+'&lookY='+dy);
+});
+look.addEventListener('pointerup',function(){dragging=false;});
+var img=document.getElementById('frame');
+setInterval(function(){img.src='/frame.jpg?t='+Date.now();},100);
+(function(){
+  var splash=document.getElementById('splash');
+  var film=document.getElementById('introfilm');
+  var skip=document.getElementById('skip');
+  function done(){splash.style.display='none';try{film.pause();}catch(e){}
+    try{sessionStorage.setItem('kimiaIntroSeen','1');}catch(e){}}
+  if(sessionStorage.getItem('kimiaIntroSeen')==='1'){return;}
+  fetch('/intro.mp4',{method:'HEAD'}).then(function(r){
+    if(!r.ok){return;}
+    splash.style.display='flex';
+    film.addEventListener('ended',done);
+    film.addEventListener('error',done);
+    skip.addEventListener('click',done);
+    splash.addEventListener('click',function(e){if(e.target!==skip){film.muted=false;film.play().catch(function(){});}});
+    film.play().catch(function(){});
+    var last=-1;
+    var stalls=0;
+    var watch=setInterval(function(){
+      if(splash.style.display==='none'){clearInterval(watch);return;}
+      var now=film.currentTime;
+      if(now>last+0.02){last=now;stalls=0;return;}
+      if(++stalls>=6){clearInterval(watch);done();}
+    },500);
+  }).catch(function(){});
+})();
+setInterval(function(){fetch('/stats').then(function(r){return r.text();}).then(function(t){document.getElementById('stats').textContent=t;}).catch(function(){});},500);
+var sfxSeq=-1,sfxCache={},sfxArmed=false;
+function armSfx(){sfxArmed=true;}
+window.addEventListener('pointerdown',armSfx,{once:true});
+window.addEventListener('keydown',armSfx,{once:true});
+function playSfx(name){if(!sfxArmed)return;var a=sfxCache[name];if(!a){a=new Audio('/sfx/'+name);sfxCache[name]=a;}try{a.currentTime=0;a.play().catch(function(){});}catch(e){}}
+setInterval(function(){fetch('/sound').then(function(r){return r.text();}).then(function(t){
+  var sp=t.indexOf(' ');if(sp<0)return;var seq=parseInt(t.slice(0,sp),10);var name=t.slice(sp+1);
+  if(sfxSeq<0){sfxSeq=seq;return;}
+  if(seq!==sfxSeq){sfxSeq=seq;if(name)playSfx(name);}
+}).catch(function(){});},150);
+var km={'1':'t:num1','2':'t:num2','3':'t:num3','4':'t:num4','5':'t:num5','6':'t:num6','7':'t:num7','8':'t:num8','9':'t:num9','r':'t:r','b':'t:b','j':'t:j',' ':'h:space','ArrowUp':'h:up','ArrowDown':'h:down','ArrowLeft':'h:left','ArrowRight':'h:right','Shift':'h:shift','c':'h:c','q':'h:q','e':'h:e','p':'t:p'};
+function kmd(e,down){var m=km[e.key];if(!m)return;e.preventDefault();if(m[0]==='h')post('key='+m.slice(2)+'&down='+(down?1:0));else if(down)post('tap='+m.slice(2));}
+window.addEventListener('keydown',function(e){kmd(e,true);});
+window.addEventListener('keyup',function(e){kmd(e,false);});
+</script>
+</body>
+</html>
