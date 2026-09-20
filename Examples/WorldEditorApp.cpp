@@ -655,6 +655,28 @@ int runWorldServer(const WorldServerOptions& opts) {
       std::printf("cannot open the game '%s': %s\n", playWorld.c_str(), startError.c_str());
       return 2;
     }
+  } else {
+    // The Workbench needs a non-empty world for Hierarchy/Inspector/Project
+    // to have anything to show. Try the shipped "street kids" demo first;
+    // if that is missing (e.g. a freshly-built tree without the embedded
+    // assets extracted yet), fall back to a fresh ground + player + ball
+    // built from the default "golf" profile so every panel has something.
+    const std::string streetDemo =
+        (assetsDir == "assets" ? std::string("Worlds/street_kids.kimia")
+                               : assetsDir + "/../Worlds/street_kids.kimia");
+    std::string startError;
+    if (!editor.loadWorld(streetDemo, startError)) {
+      const kimia::GameProfile* golf = nullptr;
+      for (const kimia::GameProfile& p : kimia::builtinProfiles()) {
+        if (p.name == "golf") { golf = &p; break; }
+      }
+      if (golf != nullptr) {
+        editor.createWorld(*golf);
+        editor.createObject("player", Vec3{0.0, 0.0, 4.0});
+        editor.createObject("ball", Vec3{0.0, 0.0, 3.0});
+        editor.createObject("hole", Vec3{0.0, 0.0, -2.0});
+      }
+    }
   }
 
   EngineOptions options;
