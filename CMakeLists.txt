@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 # literal lives in Engine/Core/include/kimia/Version.h; the configure step
 # below and a unit test keep the two identical. Bump both + add the entry at
 # the top of CHANGELOG.md per release.
-project(KIMIA VERSION 0.29.0 LANGUAGES C CXX)
+project(KIMIA VERSION 0.29.1 LANGUAGES C CXX)
 file(STRINGS Engine/Core/include/kimia/Version.h KIMIA_VERSION_LINE REGEX "#define KIMIA_ENGINE_VERSION \"")
 string(REGEX REPLACE ".*\"([0-9.]+)\".*" "\\1" KIMIA_HEADER_VERSION "${KIMIA_VERSION_LINE}")
 if(NOT KIMIA_HEADER_VERSION STREQUAL PROJECT_VERSION)
@@ -82,6 +82,43 @@ else()
 endif()
 # Binaries live in <build>/bin (the paths the engine spec's gates use).
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# --- Sanitizers (one switch for the whole tree) -----------------------------
+# "Run the tests under ASan+UBSan" must be the same command on a laptop, in
+# the devcontainer and in CI — so it is a cache variable, not a paragraph of
+# hand-written flags in a workflow file:
+#   cmake -B build-san -DKIMIA_SANITIZE=ADDRESS_UNDEFINED -DKIMIA_ENABLE_SDL2=OFF
+# The flags are applied at directory scope, BEFORE the targets exist, so every
+# first-party library and executable is instrumented. The one deliberate
+# exception is the vendored stb PNG/JPEG writer (see kimia_stb_image_write
+# below): upstream stb shifts into the sign bit on purpose.
+set(KIMIA_SANITIZE "OFF" CACHE STRING "Sanitizer for the whole build: OFF, ADDRESS_UNDEFINED or THREAD")
+set_property(CACHE KIMIA_SANITIZE PROPERTY STRINGS OFF ADDRESS_UNDEFINED THREAD)
+string(TOUPPER "${KIMIA_SANITIZE}" KIMIA_SANITIZE_NORMALIZED)
+if(NOT KIMIA_SANITIZE_NORMALIZED MATCHES "^(OFF|ADDRESS_UNDEFINED|THREAD)$")
+  message(FATAL_ERROR "KIMIA_SANITIZE must be OFF, ADDRESS_UNDEFINED or THREAD")
+endif()
+if(NOT KIMIA_SANITIZE_NORMALIZED STREQUAL "OFF")
+  if(MSVC)
+    # clang-cl could, msvc cannot; refuse instead of silently building
+    # without the checks the caller asked for.
+    message(FATAL_ERROR "KIMIA_SANITIZE needs GCC or Clang, and the MSVC toolchain has neither.")
+  endif()
+  if(KIMIA_SANITIZE_NORMALIZED STREQUAL "ADDRESS_UNDEFINED")
+    # -fno-sanitize-recover=all: a finding stops the run instead of printing a
+    # line nobody reads, so a green CTest really means "nothing found".
+    set(KIMIA_SANITIZER_FLAGS -fsanitize=address,undefined -fno-omit-frame-pointer
+                              -fno-sanitize-recover=all)
+    set(KIMIA_SANITIZER_LINK_FLAGS -fsanitize=address,undefined)
+  else()
+    # ThreadSanitizer has no -fno-sanitize-recover (it always aborts on a race).
+    set(KIMIA_SANITIZER_FLAGS -fsanitize=thread -fno-omit-frame-pointer)
+    set(KIMIA_SANITIZER_LINK_FLAGS -fsanitize=thread)
+  endif()
+  add_compile_options(${KIMIA_SANITIZER_FLAGS})
+  add_link_options(${KIMIA_SANITIZER_LINK_FLAGS})
+  message(STATUS "KIMIA sanitizer: ${KIMIA_SANITIZE_NORMALIZED} (${KIMIA_SANITIZER_FLAGS})")
+endif()
 
 find_package(Threads REQUIRED)
 
@@ -180,6 +217,16 @@ endif()
 # Vendored FBX loader (single-file library, upstream code).
 add_library(kimia_ufbx STATIC ThirdParty/ufbx/ufbx.c)
 target_include_directories(kimia_ufbx SYSTEM PUBLIC ThirdParty/ufbx)
+if(NOT KIMIA_SANITIZE_NORMALIZED STREQUAL "OFF")
+  # ufbx ships a switch for exactly this (see the option list at the top of
+  # ufbx.c): its fast DEFLATE inflate uses x86's wrapping shift on purpose,
+  # which is undefined behaviour in C, and with UFBX_UBSAN defined it masks
+  # the count instead. clang detects itself via
+  # __has_feature(undefined_behavior_sanitizer); GCC defines NO macro for
+  # -fsanitize=undefined, so under GCC the switch has to be passed by hand.
+  # Without it every FBX-reading test dies on the first sanitizer run.
+  target_compile_definitions(kimia_ufbx PRIVATE UFBX_UBSAN=1)
+endif()
 
 # Vendored OGG/Vorbis decoder (upstream C code; strict C++ warnings don't apply).
 add_library(kimia_stb_vorbis STATIC ThirdParty/stb/stb_vorbis_impl.c)
@@ -188,6 +235,20 @@ target_include_directories(kimia_stb_vorbis SYSTEM PUBLIC ThirdParty/stb)
 # tautological; that is vendored code, so keep our zero-warning gate honest
 # without patching the library.
 target_compile_options(kimia_stb_vorbis PRIVATE $<$<C_COMPILER_ID:Clang>:-Wno-tautological-compare>)
+
+# Vendored PNG/JPEG writer (stb_image_write.h), implementation only — see the
+# header comment in the file. Its JPEG entropy coder shifts a set bit into the
+# sign position deliberately (stb relies on two's complement), which UBSan
+# reports as undefined behaviour. The relaxation is scoped to this vendored
+# translation unit so it never covers our own image code.
+add_library(kimia_stb_image_write STATIC ThirdParty/stb/stb_image_write_impl.c)
+target_include_directories(kimia_stb_image_write SYSTEM PUBLIC ThirdParty/stb)
+if(NOT MSVC AND NOT KIMIA_SANITIZE_NORMALIZED STREQUAL "OFF")
+  # Late enough on the command line to override the directory-level
+  # -fsanitize=... added above (target options come after directory options).
+  target_compile_options(kimia_stb_image_write PRIVATE -fno-sanitize=shift-base,shift-exponent)
+endif()
+
 
 add_library(kimia_assets STATIC
     Engine/Graphics/src/Image.cpp
@@ -209,7 +270,8 @@ target_include_directories(kimia_assets SYSTEM PUBLIC
     ThirdParty/stb
     ThirdParty/dr
 )
-target_link_libraries(kimia_assets PUBLIC kimia_core kimia_math kimia_ufbx kimia_stb_vorbis)
+target_link_libraries(kimia_assets PUBLIC kimia_core kimia_math kimia_ufbx kimia_stb_vorbis
+                                             kimia_stb_image_write)
 target_compile_options(kimia_assets PRIVATE ${KIMIA_STRICT_WARNINGS})
 if(KIMIA_WERROR)
   target_compile_options(kimia_assets PRIVATE ${KIMIA_WERROR_FLAGS})
@@ -538,6 +600,16 @@ if(KIMIA_BUILD_TESTS)
   # Tests/assets, and ctest would otherwise start them in the build folder
   # where those files do not exist.
   add_test(NAME kimia_tests COMMAND kimia_tests WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  # The one command that means "build the engine and prove it works":
+  #   cmake --build build --target check
+  # It is the same CTest run as `ctest --test-dir build`, so a green CI job and
+  # a green local check are literally the same tests.
+  add_custom_target(check
+      COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+      DEPENDS kimia_tests
+      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+      USES_TERMINAL
+      COMMENT "KIMIA: running the full test suite")
 endif()
 
 # Release staging. The PowerShell PC packager uses this install graph so the

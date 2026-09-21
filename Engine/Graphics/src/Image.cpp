@@ -8,7 +8,9 @@
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #define STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_WRITE_IMPLEMENTATION
+// stb_image_write's implementation lives in its own translation unit
+// (ThirdParty/stb/stb_image_write_impl.c) so the one sanitizer relaxation it
+// needs cannot cover our code; only the declarations are read here.
 #include <stb_image.h>
 #include <stb_image_write.h>
 #pragma GCC diagnostic pop
