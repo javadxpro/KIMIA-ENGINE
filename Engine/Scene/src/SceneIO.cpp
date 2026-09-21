@@ -16,9 +16,14 @@ namespace {
 // scene (see needsIds below); what it can READ is the whole list.
 constexpr const char* kHeaderV1 = "# KIMIA scene v1";
 constexpr const char* kHeaderV2 = "# KIMIA scene v2";
+constexpr const char* kHeaderV3 = "# KIMIA scene v3";
 constexpr const char* kHeaderPrefix = "# KIMIA scene v";
 
-const char* headerFor(int version) { return version >= 2 ? kHeaderV2 : kHeaderV1; }
+const char* headerFor(int version) {
+  if (version >= 3) return kHeaderV3;
+  if (version >= 2) return kHeaderV2;
+  return kHeaderV1;
+}
 
 // Reads the version out of a header line, or 0 when the line is not one.
 // The text comes from the file, so anything at all can be in it.
@@ -46,6 +51,24 @@ bool needsIds(const Scene& scene) {
     expected = handle + 1U;
   });
   return needed;
+}
+
+// The version a scene needs: the newest feature it actually uses, and nothing
+// more. A scene that needs neither ids nor a motor is still a v1 file, byte for
+// byte what it always was, so an older engine keeps reading it.
+//
+// `withIds` is passed in rather than recomputed: whether the scene needs ids
+// and which version that makes the file are two DIFFERENT questions, and
+// deriving one from the other wrote `id` on every v3 file, including the ones
+// whose handles were already 1..N.
+int versionFor(const Scene& scene, bool withIds) {
+  int version = withIds ? SceneIO::kIdVersion : 1;
+  // One line per feature of the format: adding a field below must not renumber
+  // every file that never uses it.
+  scene.forEach([&version](EntityHandle, const EntityData& entity) {
+    if (entity.motor.has_value()) version = std::max(version, SceneIO::kMotorVersion);
+  });
+  return version;
 }
 
 std::string trimmed(const std::string& line) {
@@ -198,13 +221,13 @@ std::optional<MeshKind> meshKind(const std::string& token) {
 }  // namespace
 
 bool SceneIO::save(const Scene& scene, std::string& out) {
-  // The oldest version that can express this scene: v1 unless the handles
-  // need recording. Every scene saved before ids existed, and every scene
-  // that has never had an object deleted, still writes exactly the same bytes
-  // it always did.
+  // The oldest version that can express this scene. Every scene saved before
+  // ids existed, and every scene that has never had an object deleted and
+  // carries no motor, still writes exactly the same bytes it always did.
   const bool withIds = needsIds(scene);
+  const int version = versionFor(scene, withIds);
   std::ostringstream stream;
-  stream << headerFor(withIds ? kVersion : 1) << '\n';
+  stream << headerFor(version) << '\n';
   scene.forEach([&stream, withIds](EntityHandle handle, const EntityData& entity) {
     const Transform& t = entity.transform;
     stream << "e " << quoteName(entity.name);
@@ -236,6 +259,13 @@ bool SceneIO::save(const Scene& scene, std::string& out) {
       const BodyComponent& b = *entity.body;
       stream << " body " << bodyKindName(b.kind) << ' ' << format(b.mass) << ' ' << format(b.friction) << ' '
              << format(b.restitution) << ' ' << format(b.radius);
+    }
+    // Character motor (scene v3): how this entity walks.
+    if (entity.motor.has_value()) {
+      const CharacterMotorComponent& motor = *entity.motor;
+      stream << " motor " << format(motor.maxSpeed) << ' ' << format(motor.acceleration) << ' '
+             << format(motor.airControl) << ' ' << format(motor.jumpSpeed) << ' '
+             << format(motor.turnRate);
     }
     for (const AnimationComponent& clip : entity.animations) {
       stream << " anim " << quoteName(clip.clip) << ' ' << quoteName(clip.trigger) << ' '
@@ -395,6 +425,23 @@ bool SceneIO::load(const std::string& text, Scene& out, std::string& error, Load
         component.restitution = restitution;
         component.radius = radius;
         entity.body = component;
+        i += 6U;
+        continue;
+      }
+      if (keyword == "motor") {
+        // motor <speed> <accel> <air> <jump> <turn> — character walking.
+        if (i + 5U >= tokens.size()) {
+          complete = false;
+          break;
+        }
+        CharacterMotorComponent motor;
+        if (!parseF64(tokens[i + 1U], motor.maxSpeed) || !parseF64(tokens[i + 2U], motor.acceleration) ||
+            !parseF64(tokens[i + 3U], motor.airControl) || !parseF64(tokens[i + 4U], motor.jumpSpeed) ||
+            !parseF64(tokens[i + 5U], motor.turnRate)) {
+          complete = false;
+          break;
+        }
+        entity.motor = motor;
         i += 6U;
         continue;
       }
@@ -624,10 +671,14 @@ bool SceneIO::load(const std::string& text, Scene& out, std::string& error, Load
   std::sort(ignoredKeywords.begin(), ignoredKeywords.end());
   ignoredKeywords.erase(std::unique(ignoredKeywords.begin(), ignoredKeywords.end()), ignoredKeywords.end());
   report.ignoredKeywords = std::move(ignoredKeywords);
-  // The file was an older version and the result is the current model. There
-  // is no rewrite step: v2 is a superset of v1, so this is what "migration"
-  // means here.
-  report.migrated = report.version < kVersion;
+  // "Migrated" means this load had to INVENT something the file did not carry:
+  // a v1 file has no ids, so its entities were numbered here, and a file with
+  // a duplicate id had one repaired. A v2 file loaded by a v3 build is not a
+  // migration — every feature it uses is understood as written, and rewriting
+  // it would only renumber a file that was already exact. With a format where
+  // each feature has its own version, "older than kVersion" stops being a
+  // useful question; "did we have to make anything up" is.
+  report.migrated = report.assignedIds > 0U;
   out = std::move(result);
   return true;
 }

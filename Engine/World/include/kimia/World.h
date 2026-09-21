@@ -423,6 +423,11 @@ public:
 
   // --- Play simulation ---
   void update(f64 hostSeconds);
+  // The world's player pace (the editor's کند/معمولی/تند menu). When the
+  // controlled entity carries a motor, this writes the motor's top speed too:
+  // one number the menu and the feet agree on.
+  void setPlayerPace(f64 speed);
+  f64 playerPace() const;
   void setMoveInput(f64 x, f64 z);  // held direction (-1..1 per axis)
   void setFineMove(bool fine) { fine_ = fine; }
   bool playing() const { return screen_ == Screen::Play || screen_ == Screen::Goal || screen_ == Screen::RoundEnd; }
@@ -616,6 +621,7 @@ public:
   void setPlayerPosition(const Vec3& position) {
     playerPos_ = position;
     physics_.resetCharacter(position);  // teleports keep the physics body in sync
+    moveVelocity_ = Vec3{0.0, 0.0, 0.0};  // a teleport is not momentum
   }
   void jumpPressed() { jumpQueued_ = true; }  // consumed in the next PLAY update
   void setBallPosition(const Vec3& position);
@@ -839,6 +845,14 @@ public:
   std::vector<DialogueComponent> entityDialogue(const std::string& name) const;
   bool clearEntityDialogue(const std::string& name);
   // Camera target (phase 3): makes this entity the thing the camera watches.
+  // How this entity walks (phase 3). Present on the entity the player drives,
+  // the motor is what the runtime reads: top speed instead of the world's
+  // player speed, a ramp instead of a step, its own jump. Absent, everything
+  // behaves exactly as before.
+  bool setEntityMotor(const std::string& name, const CharacterMotorComponent& motor);
+  bool clearEntityMotor(const std::string& name);
+  // The motor of an entity, or nullptr when it has none (or does not exist).
+  const CharacterMotorComponent* characterMotor(const std::string& name) const;
   bool setEntityCameraTarget(const std::string& name, const CameraTargetComponent& target);
   bool clearEntityCameraTarget(const std::string& name);
   // --- A character's own bones (stage 35) ---
@@ -1066,6 +1080,9 @@ private:
   void deleteManaged();
   void applyManagedColor(const Vec3& color);
   EntityHandle playerEntity() const { return world_.scene.find("Player"); }
+  // The motor of the entity the player drives, or nullptr. The one place the
+  // runtime asks that question, so "which motor is in charge" has one answer.
+  const CharacterMotorComponent* playerMotor() const;
   EntityHandle ballEntity() const { return world_.scene.find("Ball"); }
 
   WorldData world_;
@@ -1081,6 +1098,12 @@ private:
   std::vector<u32> crateBodyIds_;        // dynamic box ids in scene order
   Vec3 playerPos_{0.0, 0.5, 4.0};
   Vec3 moveInput_{0.0, 0.0, 0.0};
+  // What the motor has actually reached (m/s). Only a motor reads this: with
+  // no motor the controller sets velocity directly, as it always has.
+  Vec3 moveVelocity_{0.0, 0.0, 0.0};
+  // Which way the driven character faces, in radians, when a motor turns it
+  // over time instead of snapping.
+  f64 playerFacing_ = 0.0;
   bool fine_ = false;
   bool jumpQueued_ = false;
   f64 goalTimer_ = 0.0;

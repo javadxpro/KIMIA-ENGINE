@@ -37,8 +37,10 @@
 ### در حال تکمیل
 
 - فاز ۳ (صحنه/موجودیت): هویت و نمایهٔ نام ✅، فایل نسخه‌دار v2 ✅، دیالوگ ✅،
-  هدف دوربین ✅ ([سند Scene](Documentation/Scene.md))؛ باقی‌مانده:
-  `CharacterMotor` (فاز ۵)، `Ability` (فاز ۶)، `ReplayMarker` (فاز ۷)
+  هدف دوربین ✅، **موتور کاراکتر (v3) با سیم‌کشی واقعی به حرکت بازیکن** ✅
+  ([سند Scene](Documentation/Scene.md)،
+  [سند موتور کاراکتر](Documentation/CharacterMotor.md))؛ باقی‌مانده:
+  `Ability` (فاز ۶)، `ReplayMarker` (فاز ۷)
 - فاز ۲: `WorldRuntime`, `CinematicCamera`, `ReplaySystem` — با فاز ۷ می‌آیند
 - هم‌سازی کامل مسیر رندر D3D11 با GL (همان PBR/تون‌مپ)
 - ~~راستی‌آزمایی واقعی بیلد WebAssembly/Emscripten~~ — job `wasm-smoke` در

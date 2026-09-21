@@ -101,6 +101,88 @@ KIMIA_TEST(sceneio_writes_v2_only_when_a_scene_has_holes) {
   KIMIA_REQUIRE(loaded.create(makeCube("D")) == 4U);
 }
 
+// --- The character motor, the first feature of scene v3 ----------------------
+
+KIMIA_TEST(sceneio_character_motor_is_a_v3_file_and_roundtrips) {
+  Scene scene;
+  EntityData walker = makeCube("Runner");
+  walker.motor = kimia::CharacterMotorComponent{2.5, 8.0, 0.1, 3.2, 4.5};
+  scene.create(walker);
+
+  const std::string text = save(scene);
+  // A motor changes how an entity MOVES, so an engine that predates it must
+  // refuse the file rather than drop the component and walk the character at
+  // the world's speed without a word.
+  KIMIA_REQUIRE(text.rfind("# KIMIA scene v3\n", 0U) == 0U);
+  KIMIA_REQUIRE(contains(text, " motor 2.5 8 0.1 3.2 4.5"));
+
+  Scene loaded;
+  std::string error;
+  SceneIO::LoadReport report;
+  KIMIA_REQUIRE(SceneIO::load(text, loaded, error, report));
+  KIMIA_REQUIRE(error.empty());
+  KIMIA_REQUIRE(report.version == 3);
+  KIMIA_REQUIRE(report.ignoredKeywords.empty());
+  KIMIA_REQUIRE(report.warnings.empty());
+  const EntityData* back = loaded.get(loaded.find("Runner"));
+  KIMIA_REQUIRE(back != nullptr);
+  KIMIA_REQUIRE(back->motor.has_value());
+  KIMIA_REQUIRE(back->motor->maxSpeed == 2.5);
+  KIMIA_REQUIRE(back->motor->acceleration == 8.0);
+  KIMIA_REQUIRE(back->motor->airControl == 0.1);
+  KIMIA_REQUIRE(back->motor->jumpSpeed == 3.2);
+  KIMIA_REQUIRE(back->motor->turnRate == 4.5);
+  KIMIA_REQUIRE(save(loaded) == text);  // save -> load -> save is stable
+}
+
+KIMIA_TEST(sceneio_v3_is_only_written_when_a_motor_needs_it) {
+  // Holes in the numbering need v2; a motor needs v3; neither needs v1. One
+  // feature at a time, so adding a keyword never renumbers every file.
+  Scene holes;
+  holes.create(makeCube("A"));
+  const EntityHandle removed = holes.create(makeCube("B"));
+  holes.create(makeCube("C"));
+  KIMIA_REQUIRE(holes.destroy(removed));
+  KIMIA_REQUIRE(save(holes).rfind("# KIMIA scene v2\n", 0U) == 0U);
+
+  // The same holes plus a motor on one entity: v3, with the ids still there.
+  EntityData* walker = holes.get(holes.find("C"));
+  KIMIA_REQUIRE(walker != nullptr);
+  walker->motor = kimia::CharacterMotorComponent{};
+  const std::string text = save(holes);
+  KIMIA_REQUIRE(text.rfind("# KIMIA scene v3\n", 0U) == 0U);
+  KIMIA_REQUIRE(contains(text, "e \"A\" id 1 "));
+  KIMIA_REQUIRE(contains(text, "e \"C\" id 3 "));
+
+  // A motor on its own (canonical handles) is still v3: the version follows
+  // what is used, not what could have been.
+  Scene canonical;
+  EntityData only = makeCube("Solo");
+  only.motor = kimia::CharacterMotorComponent{};
+  canonical.create(only);
+  const std::string oneLine = save(canonical);
+  KIMIA_REQUIRE(oneLine.rfind("# KIMIA scene v3\n", 0U) == 0U);
+  // The version is the newest FEATURE USED, not "the version that sounds
+  // right": canonical handles stay id-less even in a v3 file.
+  KIMIA_REQUIRE(contains(oneLine, "e \"Solo\" mesh cube "));
+  KIMIA_REQUIRE(!contains(oneLine, " id "));
+}
+
+KIMIA_TEST(sceneio_an_incomplete_motor_line_is_dropped_with_a_warning) {
+  // Every multi-value line in this format is all-or-nothing, and the motor is
+  // no exception: half a motor is a character whose speed nobody chose.
+  const std::string text =
+      "# KIMIA scene v3\n"
+      "e \"Runner\" mesh cube motor 2.5 8 pos 0 0 0 scale 1 1 1 color 1 1 1 rough 0.5\n";
+  Scene scene;
+  std::string error;
+  SceneIO::LoadReport report;
+  KIMIA_REQUIRE(SceneIO::load(text, scene, error, report));
+  KIMIA_REQUIRE(scene.find("Runner") == kimia::kNullEntity);
+  KIMIA_REQUIRE(report.warnings.size() == 1U);
+  KIMIA_REQUIRE(report.warnings[0].find("line 2") != std::string::npos);
+}
+
 // --- Reading files from other versions ---------------------------------------
 
 KIMIA_TEST(sceneio_migrates_v1_with_the_numbers_v1_always_produced) {
@@ -311,6 +393,17 @@ KIMIA_TEST(worldio_reports_a_scene_from_a_newer_engine) {
   std::string error;
   KIMIA_REQUIRE(!kimia::WorldIO::load(text, loaded, error));
   KIMIA_REQUIRE(contains(error, "version 7"));
+  // ...and says which version it DOES understand, so the message is a fact
+  // about this build rather than a number the reader has to guess at.
+  KIMIA_REQUIRE(contains(error, "understands (" + std::to_string(kimia::SceneIO::kVersion) + ")"));
+  // v3 is inside what this build understands: the reader takes every version
+  // up to kVersion and refuses only what comes after it.
+  const std::string motor =
+      "# KIMIA scene v3\n"
+      "e \"Runner\" mesh cube pos 0 0 0 scale 1 1 1 color 1 1 1 rough 0.5 motor 4 24 0.25 4.9 12\n";
+  kimia::Scene scene;
+  KIMIA_REQUIRE(kimia::SceneIO::load(motor, scene, error));
+  KIMIA_REQUIRE(scene.find("Runner") == 1U);
 }
 
 // --- The worlds that ship with the engine ------------------------------------

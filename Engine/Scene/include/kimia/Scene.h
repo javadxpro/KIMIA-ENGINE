@@ -111,6 +111,32 @@ struct CameraTargetComponent {
   Vec3 offset{0.0, 0.0, 0.0};  // look slightly above/beside the entity
 };
 
+// Character motor component: how this entity WALKS.
+//
+// Until this existed, "how fast the player moves" was one number for the whole
+// world (`PlayerConfig::speed`, set by the editor's کند/معمولی/تند menu) and
+// the character controller snapped to full pace on the first frame of input —
+// press a key and you are already at top speed, release and you stop dead. A
+// motor is that behaviour as DATA on the entity: top speed, how quickly that
+// speed is reached and shed, how much of the acceleration survives in the air,
+// the take-off speed of a jump, and how fast the facing follows the movement.
+//
+// A motor that is present WINS over the world's speed setting, the same rule
+// every other component follows (the name still works, a component overrides
+// it). The editor's speed menu writes the motor when the controlled entity has
+// one, so the menu and the player's feet never disagree.
+//
+// Numbers are metres and seconds. `acceleration = 0` means the old behaviour,
+// exactly: reach the target velocity in one frame, stop in one frame. That is
+// deliberate — a world that never had a motor keeps the feel it was built with.
+struct CharacterMotorComponent {
+  f64 maxSpeed = 4.0;        // m/s on the ground (the engine's «normal» pace)
+  f64 acceleration = 24.0;   // m/s^2 toward the target, both speeding up and slowing down
+  f64 airControl = 0.25;     // fraction of `acceleration` available off the ground
+  f64 jumpSpeed = 4.9;       // m/s at take-off (~1.2 m with g = 9.81); 0 = cannot jump
+  f64 turnRate = 12.0;       // rad/s the body turns toward its heading; 0 = face it at once
+};
+
 // Sound component: a registered sound name, played on the same kind of
 // trigger as an animation.
 struct SoundComponent {
@@ -147,6 +173,7 @@ struct EntityData {
   std::vector<std::string> tags;
   // Optional components. Absent means "this entity does not do that".
   std::optional<BodyComponent> body;
+  std::optional<CharacterMotorComponent> motor;
   std::optional<CameraTargetComponent> cameraTarget;
   std::vector<AnimationComponent> animations;
   std::vector<SoundComponent> sounds;

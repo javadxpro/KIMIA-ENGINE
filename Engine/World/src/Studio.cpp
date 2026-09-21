@@ -176,6 +176,18 @@ std::string dossierJson(AssetManager& assets, const EntityData& entity, const Ve
     out += "null";
   }
 
+  out += ",\"motor\":";
+  if (entity.motor.has_value()) {
+    const CharacterMotorComponent& motor = *entity.motor;
+    out += "{\"speed\":" + number(motor.maxSpeed);
+    out += ",\"accel\":" + number(motor.acceleration);
+    out += ",\"air\":" + number(motor.airControl);
+    out += ",\"jump\":" + number(motor.jumpSpeed);
+    out += ",\"turn\":" + number(motor.turnRate) + "}";
+  } else {
+    out += "null";
+  }
+
   out += ",\"motions\":[";
   for (usize i = 0; i < entity.animations.size(); ++i) {
     const AnimationComponent& clip = entity.animations[i];
@@ -778,6 +790,25 @@ std::string handleApi(WorldEditor& editor, const std::string& path,
     body.restitution = numberParam(params, "bounce", 0.3);
     body.radius = numberParam(params, "radius", 0.0);
     if (!editor.setEntityBody(param(params, "name"), body)) return errorJson("no such object");
+    return okJson();
+  }
+
+  // How this entity walks (phase 3): the character motor. Every number a
+  // request leaves out stays the component's own default, so the Bench can
+  // attach a motor by asking for nothing at all.
+  if (path == "/api/fit-motor") {
+    const std::string name = param(params, "name");
+    if (flagParam(params, "clear", false)) {
+      if (!editor.clearEntityMotor(name)) return errorJson("nothing to remove");
+      return okJson();
+    }
+    CharacterMotorComponent motor;  // the defaults are the contract
+    motor.maxSpeed = numberParam(params, "speed", motor.maxSpeed);
+    motor.acceleration = numberParam(params, "accel", motor.acceleration);
+    motor.airControl = numberParam(params, "air", motor.airControl);
+    motor.jumpSpeed = numberParam(params, "jump", motor.jumpSpeed);
+    motor.turnRate = numberParam(params, "turn", motor.turnRate);
+    if (!editor.setEntityMotor(name, motor)) return errorJson("no such object");
     return okJson();
   }
 

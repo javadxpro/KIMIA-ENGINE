@@ -636,6 +636,18 @@ void PhysicsWorld::resetCharacter(u32 id, const Vec3& position) {
   character->collisionCount = 0U;
 }
 
+bool PhysicsWorld::characterJumpSpeed(f64 takeOffSpeed) {
+  return characterJumpSpeed(kPrimaryCharacter, takeOffSpeed);
+}
+
+bool PhysicsWorld::characterJumpSpeed(u32 id, f64 takeOffSpeed) {
+  CharacterBody* character = characterById(id);
+  if (character == nullptr || !character->onGround || takeOffSpeed <= 0.0) return false;
+  character->velocity.y = takeOffSpeed;
+  character->onGround = false;
+  return true;
+}
+
 bool PhysicsWorld::characterJump(f64 height) { return characterJump(kPrimaryCharacter, height); }
 
 bool PhysicsWorld::characterJump(u32 id, f64 height) {

@@ -1154,7 +1154,125 @@ KIMIA_TEST(world_profile_kick_and_jump_tuning_apply_in_play) {
   KIMIA_REQUIRE(near(editor.playerPosition().y, 0.5, 1e-9));
 }
 
-KIMIA_TEST(world_file_carries_its_profile_and_field) {
+// --- The character motor (phase 3) -------------------------------------------
+// How an entity walks is data on the entity (Documentation/CharacterMotor.md).
+// These tests pin the three things that makes true: the pace it owns, the ramp
+// it adds, and the behaviour of a world that has no motor at all.
+
+KIMIA_TEST(world_without_a_motor_moves_exactly_as_before) {
+  WorldEditor editor = editorWithWorld();
+  addPlayer(editor, 1, Vec3{0.0, 0.0, -6.0});  // 1 = «معمولی» = 4 m/s
+  exitPlace(editor);
+  editor.choose(3);  // PLAY
+  KIMIA_REQUIRE(editor.playing());
+  KIMIA_REQUIRE(editor.characterMotor("Player") == nullptr);
+  editor.setPlayerPosition(Vec3{0.0, 0.5, -6.0});
+  editor.setMoveInput(1.0, 0.0);
+  editor.update(1.0 / 60.0);
+  // One frame of input is full speed, and one frame without it is a stop:
+  // the step the engine has always taken. A motor is what replaces it with a
+  // ramp, so this must keep saying exactly that.
+  KIMIA_REQUIRE(near(editor.squadSpeed(kimia::kPrimaryCharacter), kimia::kWorldPlayerNormal, 1e-9));
+  editor.setMoveInput(0.0, 0.0);
+  editor.update(1.0 / 60.0);
+  KIMIA_REQUIRE(editor.squadSpeed(kimia::kPrimaryCharacter) == 0.0);
+}
+
+KIMIA_TEST(character_motor_sets_the_pace_and_the_ramp) {
+  WorldEditor editor = editorWithWorld();
+  addPlayer(editor, 0, Vec3{0.0, 0.0, -6.0});  // 0 = «تند» = 6 m/s
+  exitPlace(editor);
+  editor.choose(3);  // PLAY
+
+  kimia::CharacterMotorComponent motor;
+  motor.maxSpeed = 2.0;
+  motor.acceleration = 4.0;  // 4 m/s^2: half a second to the top speed
+  motor.airControl = 0.25;
+  KIMIA_REQUIRE(editor.setEntityMotor("Player", motor));
+  const kimia::CharacterMotorComponent* stored = editor.characterMotor("Player");
+  KIMIA_REQUIRE(stored != nullptr);
+  KIMIA_REQUIRE(stored->maxSpeed == 2.0);
+
+  // The motor owns the pace: 2 m/s even though the world was built at 6. And
+  // the world's own number follows it, because kick strength, dribbling and
+  // the opponents are all tuned against that one number.
+  KIMIA_REQUIRE(editor.playerPace() == 2.0);
+  KIMIA_REQUIRE(editor.world().player.speed == 2.0);
+
+  editor.setPlayerPosition(Vec3{0.0, 0.5, -6.0});
+  // A teleport leaves the body technically off the ground for one frame (the
+  // physics lands it on the next move). Settle it first, so what is measured
+  // below is the ground ramp and not the air-control fraction of it.
+  editor.update(1.0 / 60.0);
+  KIMIA_REQUIRE(editor.physicsCharacterOnGround());
+  editor.setMoveInput(1.0, 0.0);
+  editor.update(1.0 / 60.0);
+  // One frame is 4 * (1/60) = 0.0667 m/s, not 2: the whole point of a motor.
+  const f64 first = editor.squadSpeed(kimia::kPrimaryCharacter);
+  KIMIA_REQUIRE(near(first, 4.0 / 60.0, 1e-9));
+  for (i32 i = 0; i < 120; ++i) editor.update(1.0 / 60.0);
+  KIMIA_REQUIRE(near(editor.squadSpeed(kimia::kPrimaryCharacter), 2.0, 1e-9));
+
+  // Releasing the key is a ramp too, not a wall.
+  editor.setMoveInput(0.0, 0.0);
+  editor.update(1.0 / 60.0);
+  KIMIA_REQUIRE(near(editor.squadSpeed(kimia::kPrimaryCharacter), 2.0 - 4.0 / 60.0, 1e-9));
+  for (i32 i = 0; i < 60; ++i) editor.update(1.0 / 60.0);
+  KIMIA_REQUIRE(editor.squadSpeed(kimia::kPrimaryCharacter) == 0.0);
+
+  // The pace menu writes the motor when there is one: two numbers, one pace.
+  editor.setPlayerPace(kimia::kWorldPlayerFast);
+  KIMIA_REQUIRE(editor.playerPace() == kimia::kWorldPlayerFast);
+  KIMIA_REQUIRE(editor.characterMotor("Player")->maxSpeed == kimia::kWorldPlayerFast);
+  editor.setMoveInput(1.0, 0.0);
+  editor.update(1.0 / 60.0);
+  editor.update(1.0 / 60.0);
+  KIMIA_REQUIRE(editor.squadSpeed(kimia::kPrimaryCharacter) > 4.0 / 60.0);  // ramping to 6, not 2
+
+  // Taking the motor off puts the entity back on the world's pace, instantly
+  // again — a world that never had one cannot be changed by this feature.
+  KIMIA_REQUIRE(editor.clearEntityMotor("Player"));
+  KIMIA_REQUIRE(editor.characterMotor("Player") == nullptr);
+  KIMIA_REQUIRE(!editor.clearEntityMotor("Player"));  // nothing left to remove
+  editor.update(1.0 / 60.0);
+  KIMIA_REQUIRE(near(editor.squadSpeed(kimia::kPrimaryCharacter), kimia::kWorldPlayerFast, 1e-9));
+}
+
+KIMIA_TEST(character_motor_owns_the_jump) {
+  WorldEditor editor = editorWithWorld();
+  addPlayer(editor, 1, Vec3{0.0, 0.0, -6.0});
+  exitPlace(editor);
+  editor.choose(3);  // PLAY
+
+  // Jump once and report how high the feet got. The sandbox has no obstacles
+  // where this player stands, so the apex is the take-off speed and gravity.
+  const auto apex = [&editor](f64 jumpSpeed) {
+    kimia::CharacterMotorComponent motor;
+    motor.jumpSpeed = jumpSpeed;
+    KIMIA_REQUIRE(editor.setEntityMotor("Player", motor));
+    editor.setPlayerPosition(Vec3{0.0, 0.5, -6.0});
+    editor.setMoveInput(0.0, 0.0);
+    editor.jumpPressed();
+    f64 highest = 0.0;
+    for (i32 i = 0; i < 180; ++i) {
+      editor.update(1.0 / 60.0);
+      highest = std::max(highest, editor.playerPosition().y);
+    }
+    KIMIA_REQUIRE(editor.physicsCharacterOnGround());  // and came back down
+    return highest;
+  };
+
+  const f64 low = apex(4.0);   // ~0.82 m of rise
+  const f64 high = apex(6.0);  // ~1.83 m
+  KIMIA_REQUIRE(high > low + 0.6);
+  KIMIA_REQUIRE(near(low, 0.5 + 4.0 * 4.0 / (2.0 * kimia::kGravity), 0.1));
+
+  // A motor with no take-off speed takes the jump AWAY, even though the world
+  // has one: a component overrides, it does not add.
+  KIMIA_REQUIRE(near(apex(0.0), 0.5, 1e-9));
+}
+
+KIMIA_TEST(world_file_carries_the_profile_and_field) {
   WorldEditor editor;
   createWorldFor(editor, "grass");  // 40 x 25
   editor.choose(0);
@@ -1190,6 +1308,50 @@ KIMIA_TEST(world_file_carries_its_profile_and_field) {
   KIMIA_REQUIRE(first == second);
   KIMIA_REQUIRE(first.find("# profile name grass\n") != std::string::npos);
   KIMIA_REQUIRE(first.find("# profile field 40.000000 25.000000\n") != std::string::npos);
+}
+
+KIMIA_TEST(world_file_carries_the_motor) {
+  WorldEditor editor;
+  createWorldFor(editor, "grass");
+  editor.choose(0);
+  editor.choose(0);  // player
+  editor.choose(1);  // normal
+  editor.setGhostPosition(Vec3{0.0, 0.0, -5.0});
+  editor.choose(0);  // place
+  exitPlace(editor);
+
+  kimia::CharacterMotorComponent motor;
+  motor.maxSpeed = 3.5;
+  motor.acceleration = 12.0;
+  motor.airControl = 0.4;
+  motor.jumpSpeed = 5.5;
+  motor.turnRate = 7.0;
+  KIMIA_REQUIRE(editor.setEntityMotor("Player", motor));
+
+  const std::string path = tmpPath("motor_world.kimia");
+  std::string error;
+  KIMIA_REQUIRE(editor.saveWorld(path, error));
+
+  // The world file carries the scene, and the scene needs v3 because of the
+  // motor: a world saved today says what engine can open it.
+  std::ifstream file(path, std::ios::binary);
+  std::stringstream buffer;
+  buffer << file.rdbuf();
+  const std::string text = buffer.str();
+  KIMIA_REQUIRE(text.find("motor 3.5 12 0.4 5.5 7") != std::string::npos);
+
+  WorldEditor reloaded;
+  KIMIA_REQUIRE(reloaded.loadWorld(path, error));
+  const kimia::CharacterMotorComponent* back = reloaded.characterMotor("Player");
+  KIMIA_REQUIRE(back != nullptr);
+  KIMIA_REQUIRE(back->maxSpeed == 3.5);
+  KIMIA_REQUIRE(back->acceleration == 12.0);
+  KIMIA_REQUIRE(back->airControl == 0.4);
+  KIMIA_REQUIRE(back->jumpSpeed == 5.5);
+  KIMIA_REQUIRE(back->turnRate == 7.0);
+  // The world's own pace line and the motor still agree after a round trip.
+  KIMIA_REQUIRE(reloaded.playerPace() == 3.5);
+  KIMIA_REQUIRE(reloaded.world().player.speed == 3.5);
 }
 
 KIMIA_TEST(world_old_file_takes_field_from_its_ground) {

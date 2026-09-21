@@ -240,6 +240,11 @@ public:
   // stands on something: v = sqrt(2 g h). Returns true when the jump began.
   bool characterJump(f64 height);
   bool characterJump(u32 id, f64 height);
+  // The same jump asked for as a take-off speed instead of a height, for a
+  // caller that owns the number in m/s (the character motor). One formula
+  // still decides how high a jump of a given speed goes: the physics.
+  bool characterJumpSpeed(f64 takeOffSpeed);
+  bool characterJumpSpeed(u32 id, f64 takeOffSpeed);
 
   // Highest Y (starting from center.y, capped at maxHeight) at which a sphere
   // of this radius at (center.x, ?, center.z) does NOT strictly overlap any

@@ -884,12 +884,15 @@ void WorldEditor::choose(i32 optionIndex) {
       break;
     }
     case Screen::AskPlayer: {
+      // The pace menu writes the world's number AND, when the driven entity
+      // carries a motor, that motor's top speed — one pace, whichever screen
+      // changed it.
       if (optionIndex == 0) {
-        world_.player.speed = kWorldPlayerFast;
+        setPlayerPace(kWorldPlayerFast);
       } else if (optionIndex == 1) {
-        world_.player.speed = kWorldPlayerNormal;
+        setPlayerPace(kWorldPlayerNormal);
       } else if (optionIndex == 2) {
-        world_.player.speed = kWorldPlayerSlow;
+        setPlayerPace(kWorldPlayerSlow);
       } else {
         screen_ = Screen::Catalog;
         break;

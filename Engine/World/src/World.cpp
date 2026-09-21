@@ -30,6 +30,19 @@ constexpr f64 kMoveEpsilon = 1e-6;
 constexpr f64 kPlayerMargin = 0.6;  // keep the player inside the floor
 constexpr f64 kEditMargin = 0.5;    // ghost / moved objects stay this far from the edge
 
+// Turn `from` toward `to` by at most `maxStep` radians, the short way round.
+// Used by the character motor: a body that turned the long way (or spun past
+// its target on a fast frame) would look like a bug, and angles are modular,
+// so "which way is shorter" is a real question.
+f64 turnToward(f64 from, f64 to, f64 maxStep) {
+  constexpr f64 kTurn = 6.28318530717958647692;  // 2 pi
+  f64 delta = std::fmod(to - from, kTurn);
+  if (delta > kTurn * 0.5) delta -= kTurn;
+  if (delta < -kTurn * 0.5) delta += kTurn;
+  if (std::abs(delta) <= maxStep) return to;
+  return from + (delta > 0.0 ? maxStep : -maxStep);
+}
+
 const char* playerSpeedName(f64 speed) {
   if (speed >= kWorldPlayerFast - 0.5) return "fast";
   if (speed <= kWorldPlayerSlow + 0.5) return "slow";
@@ -483,6 +496,13 @@ f64 WorldEditor::squadFacing(u32 id) const {
   // Face the way you are running. Standing still, the human keeps its aim
   // and everyone else faces up the pitch, so nobody stares at their feet.
   const f64 speed = std::sqrt(body->velocity.x * body->velocity.x + body->velocity.z * body->velocity.z);
+  if (id == kPrimaryCharacter && playerMotor() != nullptr) {
+    // The motor turns the body at its own rate, so the heading is state:
+    // what the last frames of movement left it at, not what this frame's
+    // velocity says. Standing still keeps that heading, which is what a
+    // person does.
+    return playerFacing_;
+  }
   if (speed > 0.15) return std::atan2(body->velocity.x, -body->velocity.z);
   if (id == kPrimaryCharacter) return aimYaw_;
   return body->team == 1U ? 3.14159265358979323846 : 0.0;
@@ -586,6 +606,7 @@ void WorldEditor::kickOff() {
   resetBallToCenter();
   playerPos_ = playerRest();
   physics_.resetCharacter(playerPos_);
+  moveVelocity_ = Vec3{0.0, 0.0, 0.0};  // nothing carries over between kick-offs
   // Drop everyone but the player, then lay the formation out again.
   for (const u32 id : physics_.characterIds()) {
     if (id != kPrimaryCharacter) physics_.removeCharacter(id);
@@ -601,6 +622,7 @@ void WorldEditor::enterPlay() {
   physics_.resetCharacter(playerPos_);  // feet on the ground, velocity zero
   jumpQueued_ = false;
   moveInput_ = Vec3{0.0, 0.0, 0.0};
+  moveVelocity_ = Vec3{0.0, 0.0, 0.0};
   goalTimer_ = 0.0;
   aimYaw_ = 0.0;
   power_ = 0.0;
@@ -763,15 +785,60 @@ void WorldEditor::update(f64 hostSeconds) {
 
     // Character controller: gravity, jumping and collisions live in the
     // physics module; the player shoves and kicks crates/ball as before.
-    // A jump pressed in the air is buffered until the feet touch down.
-    if (jumpQueued_ && world_.profile.jumpHeight > 0.0 && physics_.characterJump(world_.profile.jumpHeight)) {
-      jumpQueued_ = false;
-    }
+    //
+    // A motor, when the driven entity carries one, turns "I want to go that
+    // way at this speed" into real acceleration: the desired velocity is
+    // approached at `acceleration` (a fraction of it in the air) instead of
+    // being set in one frame. Without a motor the old step remains, exactly.
+    const CharacterMotorComponent* motor = playerMotor();
     // Tiredness (stage 29) slows the legs; without a stamina profile this
-    // is exactly world_.player.speed, so nothing else changes.
+    // is exactly the top speed, so nothing else changes.
     updateStamina(hostSeconds, moving);
-    physics_.moveCharacter(hostSeconds, direction * currentPlayerSpeed());
+    const Vec3 wanted = direction * currentPlayerSpeed();
+    if (motor == nullptr || motor->acceleration <= 0.0) {
+      moveVelocity_ = wanted;
+    } else {
+      const CharacterBody* body = physics_.character();
+      const bool onGround = body == nullptr || body->onGround;
+      const f64 control = onGround ? 1.0 : std::max(0.0, motor->airControl);
+      const Vec3 change = wanted - moveVelocity_;
+      const f64 changeLength =
+          std::sqrt(change.x * change.x + change.z * change.z);
+      const f64 step = motor->acceleration * control * hostSeconds;
+      if (changeLength <= step || changeLength <= 1e-9) {
+        moveVelocity_ = wanted;  // arrived, or nothing to change
+      } else {
+        moveVelocity_.x += change.x / changeLength * step;
+        moveVelocity_.z += change.z / changeLength * step;
+      }
+    }
+    physics_.moveCharacter(hostSeconds, moveVelocity_);
     playerPos_ = physics_.character()->position;
+
+    // A jump pressed in the air is buffered until the feet touch down. The
+    // motor's take-off speed wins when there is one (0 = cannot jump at all);
+    // otherwise the profile's jump height decides, as it always did.
+    if (jumpQueued_) {
+      const bool motorJump = motor != nullptr && motor->jumpSpeed > 0.0;
+      const bool profileJump = motor == nullptr && world_.profile.jumpHeight > 0.0;
+      if (motorJump ? physics_.characterJumpSpeed(motor->jumpSpeed)
+                    : (profileJump && physics_.characterJump(world_.profile.jumpHeight))) {
+        jumpQueued_ = false;
+      }
+    }
+
+    // Which way the body ends up facing. With a motor that turns, the heading
+    // follows the movement at `turnRate` instead of snapping to it; without
+    // one it snaps, which is what every existing world shows.
+    const Vec3 groundVelocity = physics_.character()->velocity;
+    if (std::sqrt(groundVelocity.x * groundVelocity.x + groundVelocity.z * groundVelocity.z) > 0.15) {
+      const f64 heading = std::atan2(groundVelocity.x, -groundVelocity.z);
+      if (motor != nullptr && motor->turnRate > 0.0) {
+        playerFacing_ = turnToward(playerFacing_, heading, motor->turnRate * hostSeconds);
+      } else {
+        playerFacing_ = heading;
+      }
+    }
     const f64 boundX = world_.halfWidth() - kPlayerMargin;
     const f64 boundZ = world_.halfLength() - kPlayerMargin;
     playerPos_.x = std::min(boundX, std::max(-boundX, playerPos_.x));
@@ -1844,6 +1911,35 @@ bool WorldEditor::clearEntityDialogue(const std::string& name) {
   return true;
 }
 
+bool WorldEditor::setEntityMotor(const std::string& name, const CharacterMotorComponent& motorValue) {
+  EntityData* target = world_.scene.get(world_.scene.find(name));
+  if (target == nullptr) return false;
+  target->motor = motorValue;
+  // Attaching a motor to the driven entity also makes its top speed the
+  // world's pace: kick strength, dribbling and the opponents' closing speed
+  // are all tuned against that one number, and a player who walked at half of
+  // it while everyone else moved at the old pace would be playing a different
+  // game than the one the world was built for. Editing the motor from here on
+  // (inspector, the کند/معمولی/تند menu) keeps the two in step.
+  if (target->name == "Player") {
+    world_.player.speed = motorValue.maxSpeed;
+  }
+  return true;
+}
+
+bool WorldEditor::clearEntityMotor(const std::string& name) {
+  EntityData* target = world_.scene.get(world_.scene.find(name));
+  if (target == nullptr || !target->motor.has_value()) return false;
+  // Back to the world's own pace: the number the motor had been overriding.
+  target->motor.reset();
+  return true;
+}
+
+const CharacterMotorComponent* WorldEditor::characterMotor(const std::string& name) const {
+  const EntityData* target = world_.scene.get(world_.scene.find(name));
+  return target != nullptr && target->motor.has_value() ? &(*target->motor) : nullptr;
+}
+
 bool WorldEditor::setEntityCameraTarget(const std::string& name, const CameraTargetComponent& targetValue) {
   EntityData* target = world_.scene.get(world_.scene.find(name));
   if (target == nullptr) return false;
@@ -2798,13 +2894,37 @@ std::string WorldEditor::rulesHudText() const {
   return std::string(stoppageName(stoppage_)) + "  " + side;
 }
 
+const CharacterMotorComponent* WorldEditor::playerMotor() const {
+  // The driven character is the entity named "Player" — the same rule the rest
+  // of the editor uses to find it (playerRest, playerEntity).
+  return characterMotor("Player");
+}
+
+void WorldEditor::setPlayerPace(f64 speed) {
+  world_.player.speed = speed;
+  // One number for the menu and the feet: if the driven entity has a motor,
+  // the menu writes the motor's top speed, because that is what moves it.
+  EntityData* player = world_.scene.get(playerEntity());
+  if (player != nullptr && player->motor.has_value()) {
+    player->motor->maxSpeed = speed;
+  }
+}
+
+f64 WorldEditor::playerPace() const {
+  const CharacterMotorComponent* motor = playerMotor();
+  return motor != nullptr ? motor->maxSpeed : world_.player.speed;
+}
+
 f64 WorldEditor::currentPlayerSpeed() const {
+  // A motor on the driven entity owns the pace; without one this is the
+  // world's own number, exactly as before.
+  const f64 topSpeed = playerPace();
   // No stamina in the profile means the endless runner every other game
   // has always had: full pace, forever.
-  if (world_.profile.stamina <= 0.0) return world_.player.speed;
+  if (world_.profile.stamina <= 0.0) return topSpeed;
   // A spent player is slower, never stopped: you tire, you do not seize up.
   const f64 pace = kRulesTiredPace + (1.0 - kRulesTiredPace) * stamina_;
-  return world_.player.speed * pace;
+  return topSpeed * pace;
 }
 
 void WorldEditor::updateStamina(f64 seconds, bool running) {
