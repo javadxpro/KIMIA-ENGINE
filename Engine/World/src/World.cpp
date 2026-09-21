@@ -2773,53 +2773,8 @@ void WorldEditor::updateArena(f64 seconds) {
 // be tested. It lives here now: the app just asks where to look and how
 // far back to stand.
 
-Vec3 WorldEditor::cameraTarget() const {
-  if (placing() || movingObject()) return Vec3{ghost_.x, 0.2, ghost_.z};
-  // A world may say what the camera should watch (CameraTargetComponent): the
-  // highest weight wins, ties go to the lowest handle, the same rule the name
-  // index follows. While the person is working on an object (selection
-  // screens) their own hands win — an authored target must not fight the
-  // editor.
-  if (!selectingObject()) {
-    const EntityHandle wanted = cameraTargetEntity();
-    if (aliveCameraTarget(wanted)) {
-      const EntityData* target = world_.scene.get(wanted);
-      return target->transform.position + target->cameraTarget->offset;
-    }
-  }
-  if (!playing()) {
-    const EntityData* selected = selectedEntity();
-    if (selectingObject() && selected != nullptr) return selected->transform.position;
-    return Vec3{0.0, 0.2, 0.0};
-  }
-  const Vec3 ball = ballPosition();
-  if (world_.profile.camera != CameraStyle::Broadcast) return ball;
-  // Broadcast: frame the play between the ball and the player, weighted
-  // toward the ball because that is what the viewer is actually watching.
-  return Vec3{ball.x * kCameraBallBias + playerPos_.x * (1.0 - kCameraBallBias), ball.y,
-              ball.z * kCameraBallBias + playerPos_.z * (1.0 - kCameraBallBias)};
-}
 
-EntityHandle WorldEditor::cameraTargetEntity() const {
-  EntityHandle best = kNullEntity;
-  f64 bestWeight = 0.0;
-  world_.scene.forEach([&](EntityHandle handle, const EntityData& entity) {
-    if (!entity.cameraTarget.has_value()) return;
-    // An edit-only target does not steer the camera during play.
-    if (playing() && !entity.cameraTarget->whilePlaying) return;
-    const f64 weight = entity.cameraTarget->weight;
-    if (weight <= bestWeight) return;  // ties keep the lower handle
-    best = handle;
-    bestWeight = weight;
-  });
-  return best;
-}
 
-bool WorldEditor::aliveCameraTarget(EntityHandle handle) const {
-  if (handle == kNullEntity) return false;
-  const EntityData* entity = world_.scene.get(handle);
-  return entity != nullptr && entity->cameraTarget.has_value();
-}
 
 // --- Dialogue (phase 3) ------------------------------------------------------
 //
@@ -2828,93 +2783,13 @@ bool WorldEditor::aliveCameraTarget(EntityHandle handle) const {
 // the HUD reads, what the editor lists and what the file stores, and phase 8's
 // story is authored on top of it.
 
-void WorldEditor::showDialogue(const std::string& speaker, DialogueComponent line) {
-  if (line.line.empty() || line.holdSeconds <= 0.0) return;
-  // One line per speaker: a second line from the same person replaces the
-  // first (people do not talk over themselves), while another speaker's line
-  // is simply also on screen.
-  for (ActiveDialogue& active : dialogue_) {
-    if (active.speaker != speaker) continue;
-    active.component = std::move(line);
-    active.remaining = active.component.holdSeconds;
-    return;
-  }
-  ActiveDialogue active;
-  active.speaker = speaker;
-  active.component = std::move(line);
-  active.remaining = active.component.holdSeconds;
-  dialogue_.push_back(std::move(active));
-}
 
-void WorldEditor::updateDialogue(f64 dt) {
-  if (dialogue_.empty() || dt <= 0.0) return;
-  for (usize i = dialogue_.size(); i > 0U; --i) {
-    dialogue_[i - 1U].remaining -= dt;
-    if (dialogue_[i - 1U].remaining <= 0.0) {
-      dialogue_.erase(dialogue_.begin() + static_cast<std::ptrdiff_t>(i - 1U));
-    }
-  }
-}
 
-void WorldEditor::clearDialogue() { dialogue_.clear(); }
 
-std::vector<std::string> WorldEditor::dialogueLines() const {
-  std::vector<std::string> lines;
-  lines.reserve(dialogue_.size());
-  for (const ActiveDialogue& active : dialogue_) {
-    lines.push_back(active.speaker.empty() ? active.component.line
-                                           : active.speaker + ": " + active.component.line);
-  }
-  return lines;
-}
 
-usize WorldEditor::fireDialogue(const std::string& entityName, const std::string& trigger) {
-  EntityData* entity = world_.scene.get(world_.scene.find(entityName));
-  if (entity == nullptr || entity->dialogue.empty()) return 0U;
-  usize started = 0U;
-  const std::string speaker = entity->name;
-  for (const DialogueComponent& line : entity->dialogue) {
-    if (line.trigger != trigger) continue;
-    showDialogue(speaker, line);
-    ++started;
-  }
-  return started;
-}
 
-usize WorldEditor::fireDialogueTrigger(const std::string& trigger) {
-  if (trigger.empty()) return 0U;
-  // Collected first, then shown. Nothing here modifies the scene today, but a
-  // container must not be mutated while it is walked — and the next person to
-  // touch this should not have to re-derive whether it is safe.
-  std::vector<std::pair<std::string, DialogueComponent>> firing;
-  world_.scene.forEach([&firing, &trigger](EntityHandle, const EntityData& entity) {
-    for (const DialogueComponent& line : entity.dialogue) {
-      if (line.trigger == trigger) firing.emplace_back(entity.name, line);
-    }
-  });
-  for (const auto& entry : firing) showDialogue(entry.first, entry.second);
-  return firing.size();
-}
 
-f64 WorldEditor::cameraDistance(f64 restingDistance) const {
-  if (!playing() || world_.profile.camera != CameraStyle::Broadcast) return restingDistance;
-  // Pull back as the ball and the player separate, so a long ball never
-  // leaves half the play off screen.
-  const Vec3 ball = ballPosition();
-  const f64 dx = ball.x - playerPos_.x;
-  const f64 dz = ball.z - playerPos_.z;
-  const f64 spread = std::sqrt(dx * dx + dz * dz);
-  const f64 wanted = kCameraBroadcastNear + spread * kCameraBroadcastPerMeter;
-  return std::min(kCameraBroadcastFar, std::max(kCameraBroadcastNear, wanted));
-}
 
-bool WorldEditor::cameraFollowsAim() const {
-  if (!playing() || roundOver()) return false;
-  // Only a chase camera swings around behind the aim. A broadcast camera
-  // holds its side of the pitch, like a real touchline camera: swinging it
-  // around behind the player every time they turn would be unwatchable.
-  return world_.profile.camera == CameraStyle::Chase;
-}
 
 // --- Computer players (stage 27) ---
 //
