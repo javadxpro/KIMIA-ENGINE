@@ -59,7 +59,7 @@ cmake --build build --target check      # بیلد + اجرای کامل تست�
 
 | job | پایه | چه چیزی را ثابت می‌کند |
 | --- | --- | --- |
-| `linux-gcc` | ubuntu-24.04، CMake+Ninja | بیلد Release با `-Werror` + کل CTest |
+| `linux-gcc` | ubuntu-24.04، CMake+Ninja | بیلد Release با `-Werror` + کل CTest + smoke اجرای واقعی اپ (زیر) |
 | `sanitizers` (ASan+UBSan) | همان + `-DKIMIA_SANITIZE=ADDRESS_UNDEFINED` | نبود خطای حافظه/UB در کل تست‌ها |
 | `sanitizers` (TSan) | همان + `-DKIMIA_SANITIZE=THREAD` | نبود data race در نخ‌های سرور/لوپ |
 | `windows-msvc-smoke` | windows-2022، MSVC | کامپایل کل درخت با MSVC/W4 + `--version` اجرا می‌شود |
@@ -77,6 +77,21 @@ cmake --build build --target check      # بیلد + اجرای کامل تست�
 پیدا کرد که هیچ کامپایلری قبلاً ندیده بود:
 `Examples/WebGLApp.cpp` هرگز کامپایل نشده بود (یک پرانتز جابه‌جا) و
 `handle_` در `GLFunctions.h` زیر Emscripten بی‌استفاده می‌شد.
+
+### smoke اجرای اپ (فاز ۲)
+
+`kimia_tests` موتور را لینک می‌کند، نه اپ را: نه سرور را بالا می‌آورد، نه
+فریم می‌سازد و نه پروفایل می‌خواند. پس هر کرشی در مسیر راه‌اندازی
+`Examples/WorldEditorApp.cpp` برای تست‌ها نامرئی است — و همین‌طور بود: یک
+اشاره‌گر آویزان به پروفایل داخل fallback راه‌اندازی، ماه‌ها زنده ماند و فقط
+وقتی کسی اپ را با `--assets`ی اجرا کرد که `../Worlds/street_kids.kimia`
+نداشت، ظاهر شد (ASan: `SEGV` داخل `WorldEditor::createWorld`).
+
+بنابراین `linux-gcc` یک قدم آخر دارد: همان باینری واقعی را با
+`--assets Tests/assets --profiles Profiles` (که عمداً مسیر fallback را
+می‌رود) بالا می‌آورد، تا ۲۰ ثانیه دنبال `GET /frame.jpg` می‌گردد و مطمئن
+می‌شود (الف) پروسه زنده است و (ب) فریم غیرخالی می‌دهد. اگر اپ بمیرد،
+`app.log` در همان قدم چاپ می‌شود.
 
 هیچ‌کدام به secret نیاز ندارند؛ فقط `GITHUB_TOKEN` پیش‌فرض برای checkout.
 
@@ -142,6 +157,8 @@ cd /tmp/kimia-clean && bash Tools/run_tests.sh --clean
 ## ۷. چه چیزی هنوز نیست
 
 - تست‌ها روی ویندوز اجرا نمی‌شوند؛ آن job فقط smoke است (بند ۴-۲).
+- smoke اجرای اپ فقط روی لینوکس و فقط «بالا می‌آید و فریم می‌دهد» را می‌سنجد؛
+  تعامل و رندر GL/D3D11 هنوز گیت ندارد (فاز ۸ و ۹).
 - `wasm-smoke` تا اولین اجرای سبز، advisory است.
 - تنظیم‌کننده‌های سرور WebViewer (`setPage`/`setMenu`/`setApiHandler`/…)
   فقط در زمان راه‌اندازی، پیش از سرو کردن ترافیک، ایمن‌اند؛ خواندن‌های

@@ -43,6 +43,30 @@ jobs:
         run: ctest --test-dir build --output-on-failure
       - name: Version banner
         run: ./build/bin/kimia_world --version
+      # kimia_tests links the engine, not the example: it never starts the
+      # server, builds a frame or reads a profile, so a crash on the way up
+      # used to be invisible until a person ran it. (That is exactly how a
+      # dangling profile pointer in the startup fallback survived.) This runs
+      # the real binary the way a user does, and asks it for a frame.
+      - name: App smoke (headless server, one frame)
+        run: |
+          set -o pipefail
+          ./build/bin/kimia_world --port 8123 --width 160 --height 120 \
+            --no-intro --assets Tests/assets --profiles Profiles > app.log 2>&1 &
+          app=$!
+          for i in $(seq 1 40); do
+            curl -fsS -o frame.jpg "http://127.0.0.1:8123/frame.jpg?t=$i" && break
+            sleep 0.5
+          done
+          if ! kill -0 $app 2>/dev/null; then
+            echo "::error::kimia_world exited during startup"; cat app.log; exit 1
+          fi
+          if [ ! -s frame.jpg ]; then
+            echo "::error::the running app served no frame"; cat app.log; exit 1
+          fi
+          echo "frame: $(stat -c%s frame.jpg) bytes"
+          kill $app; wait $app || true
+          cat app.log
 
   # --- The same suite under AddressSanitizer + UBSan and under TSan ----------
   # KIMIA_SANITIZE is a build option, not a pile of hand-written flags, so
