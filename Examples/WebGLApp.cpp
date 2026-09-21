@@ -73,7 +73,7 @@ bool boot() {
 
   // A warm emissive lamp above the ball so the metal has something to mirror.
   gScene.objects.push_back({&gCube,
-                            kimia::Mat4::translation(kimia::Vec3{-1.4, 3.0, 0.0})) *
+                            kimia::Mat4::translation(kimia::Vec3{-1.4, 3.0, 0.0}) *
                                 kimia::Mat4::scaling(kimia::Vec3{0.25, 0.08, 0.25}),
                             kimia::Vec3{0.0, 0.0, 0.0}, 1.0, 0.0, nullptr,
                             kimia::Vec3{6.0, 4.5, 3.0}, 1.0});
