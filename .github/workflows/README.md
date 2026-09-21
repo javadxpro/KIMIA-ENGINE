@@ -8,7 +8,7 @@ them build from a clean checkout — nothing is generated in the repository.
 | `ci.yml` → `linux-gcc` | Linux GCC | Release build with `-Werror` + the whole CTest suite |
 | `ci.yml` → `sanitizers` | ASan+UBSan and TSan | the same suite finds no memory error, no undefined behaviour and no data race |
 | `ci.yml` → `windows-msvc-smoke` | Windows MSVC | the engine and editor compile with `/W4` and the binary runs (`--version`) |
-| `ci.yml` → `wasm-smoke` | Emscripten | the engine compiles to WebGL2/WebAssembly (advisory, see below) |
+| `ci.yml` → `wasm-smoke` | Emscripten | the engine compiles to WebGL2/WebAssembly and emits a page |
 | `android-apk.yml` | Android | the native `kimia_jni` library and the debug APK build |
 | `windows-exe.yml` | Windows release | the self-contained single-file `kimia_world.exe` with embedded assets |
 
@@ -29,13 +29,13 @@ bash Tools/run_tests.sh --sanitize   # what sanitizers (ASan+UBSan) does
 bash Tools/run_tests.sh --tsan       # what sanitizers (TSan) does
 ```
 
-## The one advisory job
+## Every job is a gate
 
-`wasm-smoke` has `continue-on-error: true`: Emscripten is not available in the
-development sandbox this engine was last built in, so the job has never been
-seen green. It is kept visible and non-blocking on purpose — a claim of
-WebAssembly support that nobody has built would be worse than an honest yellow
-job. Once a green run is observed, delete that one line and it becomes a gate.
+The wasm job ran with `continue-on-error: true` until it had passed once,
+because Emscripten is unavailable in the development sandbox and an unverified
+green claim is worse than an honest yellow job. It went green on 2026-09-21
+(and immediately earned its keep: it found `Examples/WebGLApp.cpp` had never
+been compiled). The exception is gone; all five jobs now block.
 
 ## Notes
 

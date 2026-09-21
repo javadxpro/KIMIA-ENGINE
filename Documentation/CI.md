@@ -63,7 +63,7 @@ cmake --build build --target check      # بیلد + اجرای کامل تست�
 | `sanitizers` (ASan+UBSan) | همان + `-DKIMIA_SANITIZE=ADDRESS_UNDEFINED` | نبود خطای حافظه/UB در کل تست‌ها |
 | `sanitizers` (TSan) | همان + `-DKIMIA_SANITIZE=THREAD` | نبود data race در نخ‌های سرور/لوپ |
 | `windows-msvc-smoke` | windows-2022، MSVC | کامپایل کل درخت با MSVC/W4 + `--version` اجرا می‌شود |
-| `wasm-smoke` | emsdk 3.1.61 | `Examples/WebGLApp.cpp` با emcmake ساخته می‌شود و `.html` می‌دهد — **advisory** |
+| `wasm-smoke` | emsdk 3.1.61 | `Examples/WebGLApp.cpp` با emcmake ساخته می‌شود و `.html` می‌دهد |
 | `android-apk` | ubuntu + NDK 26.3 + Gradle 8.7 | `kimia_jni` و APK دیباگ ساخته می‌شوند |
 | `windows-exe` | windows-2022 + vcpkg SDL2 static | EXE خودکفای تک‌فایلی با دارایی‌های جاسازی‌شده |
 
@@ -71,10 +71,12 @@ cmake --build build --target check      # بیلد + اجرای کامل تست�
 پس از رفع مسابقهٔ واقعی که خودش پیدا کرد (`web::Server::stop`)، تمیز شد و
 اکنون یک job لازم‌الاجراست.
 
-**`wasm-smoke` تنها job غیراجباری است** (`continue-on-error: true`): در این
-محیط Emscripten نصب نیست، پس هرگز سبز دیده نشده. عمداً زرد و قابل‌دیدن مانده —
-ادعای پشتیبانی WebAssembly بدون یک بیلد واقعی بدتر از یک job زرد صادق است.
-اولین اجرای سبز که دیده شد، آن یک خط حذف می‌شود و این هم گیت می‌شود.
+`wasm-smoke` تا اولین اجرای سبز، `continue-on-error: true` داشت (در این
+محیط Emscripten نصب نیست). در اجرای CI شمارهٔ 35596687112 هر پنج job سبز
+شدند، پس آن استثنا برداشته شد و این job هم گیت است. همان job دو باگ واقعی
+پیدا کرد که هیچ کامپایلری قبلاً ندیده بود:
+`Examples/WebGLApp.cpp` هرگز کامپایل نشده بود (یک پرانتز جابه‌جا) و
+`handle_` در `GLFunctions.h` زیر Emscripten بی‌استفاده می‌شد.
 
 هیچ‌کدام به secret نیاز ندارند؛ فقط `GITHUB_TOKEN` پیش‌فرض برای checkout.
 

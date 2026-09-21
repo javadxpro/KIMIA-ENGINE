@@ -131,12 +131,12 @@ jobs:
         run: .\build\bin\kimia_world.exe --version
 
   # --- WebAssembly: the engine compiled by Emscripten to WebGL2 ---------------
-  # Not verified locally while writing this (the sandbox has no Emscripten);
-  # it is advisory until the first green run, then flip continue-on-error off.
+  # This job found Examples/WebGLApp.cpp had never compiled at all, and then
+  # passed: it is a required gate now (it was advisory only until the first
+  # green run, which happened on 2026-09-21).
   wasm-smoke:
     name: WebAssembly smoke build (Emscripten)
     runs-on: ubuntu-24.04
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Install build tools
