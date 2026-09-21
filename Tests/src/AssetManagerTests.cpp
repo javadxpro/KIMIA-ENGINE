@@ -159,12 +159,15 @@ KIMIA_TEST(asset_manager_caches_meshes_and_does_not_reload_per_frame) {
   KIMIA_REQUIRE(assets.stats().hits == 120U);
   KIMIA_REQUIRE(assets.stats().failures == 0U);
 
-  // The mesh, its material table and its skeleton are separate caches over
-  // the same file, so asking for a different shape of the same asset loads
-  // once more (they are genuinely different parses).
-  KIMIA_REQUIRE(assets.meshAsset(file) != nullptr);
-  KIMIA_REQUIRE(assets.stats().loads == 2U);
-  KIMIA_REQUIRE(assets.stats().hits == 120U);
+  // The material view of the same file is the SAME parse: a model whose
+  // renderer wants its materials, its texture or its sub-meshes does not pay
+  // for a second read of the file.
+  const kimia::assets::MeshAsset* asset = assets.meshAsset(file);
+  KIMIA_REQUIRE(asset != nullptr);
+  KIMIA_REQUIRE(assets.stats().loads == 1U);
+  KIMIA_REQUIRE(&asset->mesh == first);  // literally the same object
+  KIMIA_REQUIRE(assets.stats().requests == 122U);
+  KIMIA_REQUIRE(assets.stats().hits == 121U);
 }
 
 KIMIA_TEST(asset_manager_reports_a_missing_mesh_once_and_remembers_it) {

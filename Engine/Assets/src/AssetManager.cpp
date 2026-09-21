@@ -119,41 +119,12 @@ std::string AssetManager::resolveFor(const std::string& file, bool& missing) {
 }
 
 const MeshData* AssetManager::mesh(const std::string& file) {
-  if (file.empty()) {
-    lastError_ = "empty asset path";
-    return nullptr;
-  }
-  ++stats_.requests;
-  Entry<std::optional<MeshData>>& entry = meshes_[file];
-  if (entry.tried) {
-    ++stats_.hits;
-    if (!entry.error.empty()) {
-      lastError_ = entry.error;
-      return nullptr;
-    }
-    lastError_.clear();
-    return entry.value.has_value() ? &entry.value.value() : nullptr;
-  }
-  entry.tried = true;
-
-  bool missing = false;
-  const std::string path = resolveFor(file, missing);
-  if (!missing) {
-    std::string error;
-    std::optional<assets::MeshLoadResult> loaded = assets::loadMesh(path, error);
-    if (loaded.has_value()) {
-      entry.value = std::move(loaded->mesh);
-      ++stats_.loads;
-      lastError_.clear();
-      return &entry.value.value();
-    }
-    entry.error = "cannot read '" + file + "': " + (error.empty() ? std::string("unknown error") : error);
-  } else {
-    entry.error = lastError_;
-  }
-  ++stats_.failures;
-  lastError_ = entry.error;
-  return nullptr;
+  // One cache, not two: the merged mesh a caller wants for a quick draw and
+  // the material table another wants for a split draw come out of the same
+  // parse of the file. Before this, asking for both read the file twice, which
+  // on a phone is a second of startup for a whole world.
+  const assets::MeshAsset* asset = meshAsset(file);
+  return asset != nullptr ? &asset->mesh : nullptr;
 }
 
 const assets::MeshAsset* AssetManager::meshAsset(const std::string& file) {
@@ -279,15 +250,13 @@ u64 AssetManager::textureRevision(const std::string& file) const {
 }
 
 bool AssetManager::invalidate(const std::string& file) {
-  bool removed = meshes_.erase(file) > 0U;
-  removed = meshAssets_.erase(file) > 0U || removed;
+  bool removed = meshAssets_.erase(file) > 0U;
   removed = skinned_.erase(file) > 0U || removed;
   removed = images_.erase(file) > 0U || removed;
   return removed;
 }
 
 void AssetManager::clear() {
-  meshes_.clear();
   meshAssets_.clear();
   skinned_.clear();
   images_.clear();
@@ -296,9 +265,6 @@ void AssetManager::clear() {
 
 std::vector<std::string> AssetManager::missingAssets() const {
   std::vector<std::string> missing;
-  for (const auto& entry : meshes_) {
-    if (!entry.second.error.empty()) missing.push_back(entry.first);
-  }
   for (const auto& entry : meshAssets_) {
     if (!entry.second.error.empty()) missing.push_back(entry.first);
   }

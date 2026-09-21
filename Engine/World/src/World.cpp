@@ -2424,22 +2424,12 @@ const assets::MeshAsset* WorldEditor::assetFor(const std::string& meshFile) {
     cached = assetCache_.emplace(loadPath, assets::loadMeshAsset(loadPath, error)).first;
   }
   // One check for both paths, so a cached answer never disagrees with a
-  // fresh one.
+  // fresh one. A mesh with no material info at all draws the old way (one
+  // entity-colored piece); the split path is only for files whose materials
+  // actually say something. That rule is shared with the draw-list builder,
+  // which asks the asset manager for the same table.
   const std::optional<assets::MeshAsset>& stored = cached->second;
-  if (!stored.has_value() || stored->subMeshes.empty()) return nullptr;
-  // A mesh with no material info at all draws the old way (one
-  // entity-colored piece); the split path is only for files whose
-  // materials actually say something.
-  if (stored->materials.empty()) {
-    bool tagged = false;
-    for (const MeshData& sub : stored->subMeshes) {
-      if (!sub.materialName.empty()) {
-        tagged = true;
-        break;
-      }
-    }
-    if (!tagged) return nullptr;
-  }
+  if (!stored.has_value() || !assets::splitsByMaterial(*stored)) return nullptr;
   return &(*stored);
 }
 

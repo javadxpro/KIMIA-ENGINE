@@ -685,10 +685,27 @@ std::optional<SkinnedAsset> loadFBXSkinned(const std::string& path, std::string&
 
 std::optional<MeshAsset> loadMeshAsset(const std::string& path, std::string& error) {
   const std::string ext = extension(path);
+  // The same advice loadMesh() gives: a .blend is a project file, not a mesh,
+  // and saying so beats "unsupported format".
+  if (ext == ".blend") {
+    error = "'.blend' files cannot be loaded directly. In Blender use File > Export > "
+            "Wavefront (.obj) or FBX (.fbx) and load the exported file instead: " +
+            path;
+    return std::nullopt;
+  }
   if (ext == ".obj") return loadOBJAsset(path, error);
   if (ext == ".fbx") return loadFBXAsset(path, error);
   error = "unsupported mesh format (expected .obj or .fbx): " + path;
   return std::nullopt;
+}
+
+bool splitsByMaterial(const MeshAsset& asset) {
+  if (asset.subMeshes.empty()) return false;
+  if (!asset.materials.empty()) return true;
+  for (const MeshData& sub : asset.subMeshes) {
+    if (!sub.materialName.empty()) return true;
+  }
+  return false;
 }
 
 std::optional<std::vector<MeshData>> loadFBXAll(const std::string& path, std::string& error) {

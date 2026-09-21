@@ -75,7 +75,11 @@ public:
   // Every one of these returns nullptr when the asset is unusable, and
   // records the reason in lastError(). Pointers stay valid until
   // invalidate()/clear() (the containers are node-based).
+  // The merged mesh of a file, for callers that just want to draw it. Same
+  // cache and same parse as meshAsset(): a file is read once however many
+  // shapes of it are asked for.
   const MeshData* mesh(const std::string& file);
+  // The merged mesh plus its material table and per-material sub-meshes.
   const assets::MeshAsset* meshAsset(const std::string& file);
   const assets::SkinnedAsset* skinned(const std::string& file);
 
@@ -131,7 +135,6 @@ private:
   std::string resolveFor(const std::string& file, bool& missing);
 
   std::vector<std::string> roots_;
-  std::map<std::string, Entry<std::optional<MeshData>>> meshes_;
   std::map<std::string, Entry<std::optional<assets::MeshAsset>>> meshAssets_;
   std::map<std::string, Entry<std::optional<assets::SkinnedAsset>>> skinned_;
   std::map<std::string, ImageEntry> images_;

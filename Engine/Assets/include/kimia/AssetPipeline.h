@@ -53,6 +53,18 @@ std::optional<MeshAsset> loadFBXAsset(const std::string& path, std::string& erro
 // "the model and its materials" should not have to care about the format.
 std::optional<MeshAsset> loadMeshAsset(const std::string& path, std::string& error);
 
+// True when a model's materials say enough to draw it as separate tinted
+// pieces (one draw call per `usemtl` run) instead of one entity-coloured
+// object. A file with no material table at all, or with sub-meshes that carry
+// no material name, is not worth splitting.
+//
+// The rule lives here, once, because two callers must agree on it: the
+// editor, which decides whether a file has a material view at all, and the
+// frame's draw-list builder, which decides whether to use it. A disagreement
+// shows up as a model that draws in a different number of pieces depending on
+// which of the two asked first.
+bool splitsByMaterial(const MeshAsset& asset);
+
 // --- Skeletons and animation (stage 25) ---
 //
 // Loads the first skinned mesh in an FBX plus its skeleton and every
