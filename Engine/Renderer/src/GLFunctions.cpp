@@ -138,6 +138,12 @@ bool GLFunctions::load(GLGetProcFn proc) {
   return true;
 #endif
 
+  // Everything below is the dlopen/LoadLibrary path, which only exists on
+  // desktop and Android. Under Emscripten the entry points are linked in
+  // directly and wired above, so this fallback must not even be compiled:
+  // without this guard the Emscripten build failed on RTLD_NOW, resolve() and
+  // gLibraryHandle, none of which exist there (found by the wasm CI job).
+#ifndef __EMSCRIPTEN__
   GLGetProcFn resolver = proc;
   if (resolver == nullptr) {
 #ifdef _WIN32
@@ -221,6 +227,8 @@ bool GLFunctions::load(GLGetProcFn proc) {
   LOAD(blendFunc);
 
   gLibraryHandle = nullptr;
+#endif  // !__EMSCRIPTEN__
+
   if (createShaderFn == nullptr || createProgramFn == nullptr || drawElementsFn == nullptr ||
       useProgramFn == nullptr || clearFn == nullptr) {
     unload();

@@ -1,14 +1,13 @@
 #include <kimia/AssetPipeline.h>
 
-// Vendored third-party code: keep strict warnings scoped to our own code.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wdouble-promotion"
-#pragma GCC diagnostic ignored "-Wshadow"
-#pragma GCC diagnostic ignored "-Wunused-parameter"
-#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#include <kimia/VendoredWarnings.h>
+
+// Vendored third-party code: keep strict warnings scoped to our own code, using
+// the compiler-appropriate spelling (see kimia/VendoredWarnings.h — MSVC treats
+// `#pragma GCC ...` as warning C4068 and /WX then fails the build).
+KIMIA_VENDORED_WARNINGS_PUSH
 #include <ufbx.h>
-#pragma GCC diagnostic pop
+KIMIA_VENDORED_WARNINGS_POP
 
 #include <cmath>
 #include <cstdint>

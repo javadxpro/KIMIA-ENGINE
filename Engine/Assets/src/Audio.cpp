@@ -1,19 +1,18 @@
 #include <kimia/Audio.h>
 
-// Vendored third-party code: keep strict warnings scoped to our own code.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wdouble-promotion"
-#pragma GCC diagnostic ignored "-Wshadow"
-#pragma GCC diagnostic ignored "-Wunused-parameter"
-#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#include <kimia/VendoredWarnings.h>
+
+// Vendored third-party code: keep strict warnings scoped to our own code, using
+// the compiler-appropriate spelling (see kimia/VendoredWarnings.h — MSVC treats
+// `#pragma GCC ...` as warning C4068 and /WX then fails the build).
+KIMIA_VENDORED_WARNINGS_PUSH
 #define DR_WAV_IMPLEMENTATION
 #define DR_MP3_IMPLEMENTATION
 #define DR_FLAC_IMPLEMENTATION
 #include <dr_flac.h>
 #include <dr_mp3.h>
 #include <dr_wav.h>
-#pragma GCC diagnostic pop
+KIMIA_VENDORED_WARNINGS_POP
 
 #include <algorithm>
 #include <cmath>
