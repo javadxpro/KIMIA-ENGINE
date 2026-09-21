@@ -25,10 +25,23 @@
 - KIMIA Editor (WebWorkbench) به سبک Unity
 - APK بومی اندروید (GLES3) و EXE خودکفای ویندوز (D3D11)
 
+### زیرساخت کیفیت (زنده از 0.29.1)
+
+- پنج job در GitHub Actions: بیلد لینوکس با `-Werror`، کل CTest، همان
+  تست‌ها زیر ASan+UBSan و زیر TSan، smoke بیلد MSVC، و APK/EXE.
+- `bash Tools/run_tests.sh [--sanitize|--tsan]` و target `check` — یک
+  دستور برای بیلد + کل تست‌ها، همان چیزی که CI اجرا می‌کند.
+- سند [CI](Documentation/CI.md): گزینه‌ها، معنی هر job و استثناهای مستند.
+
 ### در حال تکمیل
 
 - هم‌سازی کامل مسیر رندر D3D11 با GL (همان PBR/تون‌مپ)
-- راستی‌آزمایی واقعی بیلد WebAssembly/Emscripten (در sandbox مسدود است)
+- راستی‌آزمایی واقعی بیلد WebAssembly/Emscripten (job `wasm-smoke` تا
+  اولین اجرای سبز، غیراجباری است؛ در sandboxِ بدون Emscripten ساخته نشده)
+- اجرای تست‌ها روی ویندوز: `Tests/src/WebTests.cpp` سوکت POSIX می‌خواهد،
+  پس job ویندوز فعلاً فقط smoke بیلد است
+- ایمن‌سازی کامل تنظیم‌کننده‌های سرور WebViewer برای تغییر پس از شروع
+  سرو کردن ترافیک (فاز ۱۰)
 
 ---
 

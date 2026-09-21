@@ -33,16 +33,17 @@ termux-setup-storage   # اختیاری، فقط اگر میخواهی فایل�
 
 ## ۳. کلون کردن ریپو
 
-شاخهٔ کاری **همیشه** `arena/01a080a4-ai-codespace` است. `main` فقط اسکلت است و موتور کامل را ندارد:
+موتور کامل روی شاخه‌های `arena/*` است؛ `main` فقط اسکلت ابتدایی را دارد. شاخهٔ کاری کنونی **`arena/01a0c3a7-kimia-engine`** است:
 
 ```bash
 cd ~
-git clone https://github.com/javadxpro/AI-codespace.git
-cd AI-codespace
-git checkout arena/01a080a4-ai-codespace
+git clone https://github.com/javadxpro/KIMIA-ENGINE.git
+cd KIMIA-ENGINE
+git checkout arena/01a0c3a7-kimia-engine
 ```
 
-> اگر قبلاً clone کردهای: `cd AI-codespace && git fetch && git checkout arena/01a080a4-ai-codespace && git pull`.
+> اگر نام شاخه عوض شده: `git fetch origin && git branch -r | grep arena` و آخرین شاخهٔ `arena/*` را checkout کن.
+> برای clone قبلی: `cd KIMIA-ENGINE && git fetch && git checkout arena/01a0c3a7-kimia-engine && git pull`.
 
 ## ۴. بیلد (یک دستور، ۵ تا ۱۵ دقیقه)
 
@@ -120,8 +121,8 @@ bash Tools/termux_build.sh --clean
 | علامت | علت | راهحل |
 | --- | --- | --- |
 | `cmake: command not found` | نصب نیست یا خراب است | `pkg install -y cmake`؛ اگر خطای `CMAKE_ROOT` چاپ شد، `pkg uninstall cmake && pkg install cmake` |
-| `fatal error: 'jni.h' not found` | شاخه اشتباه clone شده | `git branch` باید `arena/01a080a4-ai-codespace` باشد، نه `main` |
-| `./build/bin/kimia_tests failed` | سورس ناقص | `git checkout arena/01a080a4-ai-codespace && git pull && bash Tools/termux_build.sh --clean` |
+| `fatal error: 'jni.h' not found` | شاخه اشتباه clone شده | `git branch` باید یک شاخهٔ `arena/*` باشد، نه `main` |
+| `./build/bin/kimia_tests failed` | سورس ناقص | `git checkout arena/01a0c3a7-kimia-engine && git pull && bash Tools/termux_build.sh --clean` |
 | مرورگر چیزی نشان نمیدهد | فایروال / حالت privacy مرورگر | اگر از Firefox استفاده میکنی، Enhanced Tracking Protection را خاموش کن |
 | فریمها خیلی کند هستند | GLES3 در CPU روی برخی گوشیها | `--no-gpu` اضافه کن (فقط WebViewer headless) |
 | گوشی داغ میکند | `--fps=30` بزن | `./build/bin/kimia_world --port 8080 --fps 30` |
@@ -133,7 +134,7 @@ bash Tools/termux_build.sh --clean
 ./build/bin/kimia_world --version
 ```
 
-باید چاپ کند: `KIMIA 0.29.0 (engine: GLES3 headless)`.
+باید چاپ کند: `KIMIA <شمارهٔ نسخه>` (همان مقداری که در `Engine/Core/include/kimia/Version.h` است).
 
 ## گام بعدی
 
@@ -149,7 +150,9 @@ ip addr show | grep -w inet
 http://192.168.x.x:8080
 ```
 
-> **نکتهٔ امنیتی:** WebViewer هیچ احراز هویتی ندارد. هر کسی روی شبکهٔ Wi-Fi شما میتواند به آن وصل شود. اگر نگرانی، فقط روی حالت آفلاین استفاده کن، یا با `iptables -A INPUT -p tcp --dport 8080 -j DROP` پورت را ببند.
+> **نکتهٔ امنیتی:** به‌طور پیش‌فرض سرور فقط روی `127.0.0.1` گوش می‌دهد و از بیرون قابل دسترسی نیست.
+> اگر `--bind 0.0.0.0` بدهی، **باید** `--auth <token>` هم بدهی؛ بدون توکن سرور بالا نمی‌آید.
+> در آن حالت: `http://<IP>:8080/?token=<token>` (توکن در کوکی HttpOnly می‌نشیند و از URL بعدی حذف می‌شود).
 
 ---
 
@@ -158,8 +161,8 @@ http://192.168.x.x:8080
 ```bash
 pkg update -y && pkg upgrade -y
 pkg install -y git clang cmake ninja python
-cd ~ && git clone https://github.com/javadxpro/AI-codespace.git
-cd AI-codespace && git checkout arena/01a080a4-ai-codespace
+cd ~ && git clone https://github.com/javadxpro/KIMIA-ENGINE.git
+cd KIMIA-ENGINE && git checkout arena/01a0c3a7-kimia-engine
 bash Tools/termux_build.sh --run
 # سپس در مرورگر: http://127.0.0.1:8080
 ```

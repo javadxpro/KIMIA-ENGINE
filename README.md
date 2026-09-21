@@ -2,9 +2,9 @@
 
 موتور بازی C++17 و ویرایشگر گزینه‌محور **KIMIA World** — از صفر، بدون وابستگی اجباری و بدون کتابخانهٔ غیرآزاد.
 
-نسخهٔ فعلی موتور: **`0.29.0`** (در `Engine/Core/include/kimia/Version.h`؛ تاریخچهٔ کامل در [CHANGELOG.md](CHANGELOG.md)).
+نسخهٔ فعلی موتور: **`0.29.1`** (در `Engine/Core/include/kimia/Version.h`؛ تاریخچهٔ کامل در [CHANGELOG.md](CHANGELOG.md)).
 
-> انشعاب کاری: همهٔ کار روی `arena/01a080a4-ai-codespace` است؛ `main` فقط اسکلت ابتدایی دارد.
+> انشعاب کاری موتور: یک شاخهٔ `arena/*` (شاخهٔ کنونی `arena/01a0c3a7-kimia-engine`)؛ `main` فقط اسکلت ابتدایی دارد.
 
 ---
 
@@ -40,6 +40,17 @@ cmake --build build -j4
 ./build/bin/kimia_tests               # 475/475 tests passed
 ctest --test-dir build --output-on-failure
 ```
+
+یک دستور برای همهٔ چرخه (همان چیزی که CI اجرا می‌کند):
+
+```bash
+bash Tools/run_tests.sh              # Release + -Werror + ctest
+bash Tools/run_tests.sh --sanitize   # همان تست‌ها زیر ASan + UBSan
+bash Tools/run_tests.sh --tsan       # همان تست‌ها زیر ThreadSanitizer
+cmake --build build --target check   # بیلد + اجرای کل تست‌ها از داخل بیلد
+```
+
+جزئیات CI، گزینه‌های بیلد و معنی هر job: [CI](Documentation/CI.md).
 
 بیلد headless (بدون SDL2، مسیر WebViewer):
 
@@ -92,6 +103,7 @@ Web/              پوستهٔ WebGL (Emscripten)
 | سند | موضوع |
 | --- | --- |
 | [GettingStarted](Documentation/GettingStarted.md) | نصب، بیلد و اجرا روی هر پلتفرم + خروجی‌های CI |
+| [CI](Documentation/CI.md) | jobهای CI، گزینه‌های بیلد، اجرای تست در checkout تمیز |
 | [Architecture](Documentation/Architecture.md) | لایه‌های موتور و جریان داده |
 | [Rendering](Documentation/Rendering.md) | مسیرهای رندر و خط لولهٔ رنگ |
 | [Physics](Documentation/Physics.md) | موتور فیزیک |

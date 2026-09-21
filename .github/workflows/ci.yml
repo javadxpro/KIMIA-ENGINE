@@ -1,0 +1,134 @@
+name: CI
+# The quality gate. Everything here runs the SAME commands a developer runs:
+# Tools/run_tests.sh (or the CMake presets it wraps), so a green job and a
+# green local check cannot drift apart.
+#
+# No secrets are needed: checkout uses the default GITHUB_TOKEN and every other
+# step is public tooling.
+
+on:
+  push:
+    branches:
+      - main
+      - 'arena/**'
+      - 'feature/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # --- Linux GCC: the primary build, warnings are errors, full test suite -----
+  linux-gcc:
+    name: Linux GCC (Release, -Werror, ctest)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DKIMIA_WERROR=ON \
+            -DKIMIA_ENABLE_SDL2=OFF
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+      - name: Test (CTest)
+        run: ctest --test-dir build --output-on-failure
+      - name: Version banner
+        run: ./build/bin/kimia_world --version
+
+  # --- The same suite under AddressSanitizer + UBSan and under TSan ----------
+  # KIMIA_SANITIZE is a build option, not a pile of hand-written flags, so
+  # these two jobs differ only in that one word.
+  sanitizers:
+    name: Sanitizers (${{ matrix.sanitize }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitize: ADDRESS_UNDEFINED
+            name: ASan+UBSan
+          - sanitize: THREAD
+            name: TSan
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Configure
+        run: |
+          cmake -S . -B build-san -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DKIMIA_WERROR=ON \
+            -DKIMIA_ENABLE_SDL2=OFF \
+            -DKIMIA_SANITIZE=${{ matrix.sanitize }}
+      - name: Build
+        run: cmake --build build-san -j"$(nproc)"
+      - name: Test (CTest, sanitizer output is fatal)
+        env:
+          # Print where a finding came from instead of a bare address.
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=0:print_stacktrace=1
+          UBSAN_OPTIONS: print_stacktrace=1
+          TSAN_OPTIONS: second_deadlock_stack=1
+        run: ctest --test-dir build-san --output-on-failure
+
+  # --- Windows / MSVC: a real compile of the whole tree, then run the binary --
+  # The aggregate test executable is POSIX-only today (its web client uses
+  # POSIX sockets), so this job is deliberately a smoke build: it proves the
+  # engine and the editor compile with MSVC's /W4 and that the produced
+  # executable starts and reports its version.
+  windows-msvc-smoke:
+    name: Windows MSVC smoke build
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DKIMIA_WERROR=ON `
+            -DKIMIA_BUILD_TESTS=OFF `
+            -DKIMIA_BUILD_TOOLS=OFF `
+            -DKIMIA_ENABLE_SDL2=OFF `
+            -DKIMIA_BUILD_PC=OFF `
+            -DKIMIA_ENABLE_D3D11=ON
+      - name: Build
+        shell: pwsh
+        run: cmake --build build -j 4
+      - name: Smoke (version)
+        shell: pwsh
+        run: .\build\bin\kimia_world.exe --version
+
+  # --- WebAssembly: the engine compiled by Emscripten to WebGL2 ---------------
+  # Not verified locally while writing this (the sandbox has no Emscripten);
+  # it is advisory until the first green run, then flip continue-on-error off.
+  wasm-smoke:
+    name: WebAssembly smoke build (Emscripten)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Set up Emscripten
+        uses: emscripten-core/setup-emsdk@v14
+        with:
+          version: 3.1.61
+      - name: Configure
+        run: cmake --preset webgl-release
+      - name: Build
+        run: cmake --build --preset webgl-release -j"$(nproc)"
+      - name: Check the produced page
+        run: test -f out/build/webgl-release/bin/kimia_webgl.html

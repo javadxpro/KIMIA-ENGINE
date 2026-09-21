@@ -13,7 +13,9 @@
 | `kimia-world-windows-x64` | `kimia_world.exe` تک‌فایلی (D3D11 + fallback نرم‌افزاری) |
 | `kimia-world-debug-apk` | `app-debug.apk` بومی (GLES3 + fallback نرم‌افزاری) |
 
-مسیر: ریپو `javadxpro/AI-codespace` → تب **Actions** → اجرای `Build Windows EXE` یا `Build Android APK` → بخش **Artifacts**.
+مسیر: ریپو `javadxpro/KIMIA-ENGINE` → تب **Actions** → اجرای `Build Windows EXE` یا `Build Android APK` → بخش **Artifacts**.
+
+جزئیات jobها، گزینه‌های بیلد و اجرای محلی همان تست‌ها: [CI](CI.md).
 
 ---
 
@@ -25,6 +27,14 @@
 cmake -B build -DKIMIA_WERROR=ON
 cmake --build build -j4
 ./build/bin/kimia_tests          # 475/475 tests passed
+```
+
+یک دستور برای کل چرخهٔ بیلد + تست (همان کاری که CI می‌کند):
+
+```bash
+bash Tools/run_tests.sh              # Release + -Werror + ctest
+bash Tools/run_tests.sh --sanitize   # همان تست‌ها زیر ASan + UBSan
+bash Tools/run_tests.sh --tsan       # همان تست‌ها زیر ThreadSanitizer
 ```
 
 اجرای ویرایشگر/بازی (WebViewer headless — بدون نیاز به SDL2):
@@ -45,8 +55,8 @@ cmake --build build-nosdl -j4
 
 ```bash
 pkg install -y git clang cmake ninja
-git clone --branch arena/01a080a4-ai-codespace https://github.com/javadxpro/AI-codespace.git
-cd AI-codespace
+git clone --branch arena/01a0c3a7-kimia-engine https://github.com/javadxpro/KIMIA-ENGINE.git
+cd KIMIA-ENGINE
 bash Tools/termux_build.sh         # ابزار → cmake → build → تست → دستور بعدی
 ./build/bin/kimia_world --port 8080 --profiles build/bin/profiles
 ```

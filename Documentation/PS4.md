@@ -21,8 +21,8 @@ PS4 یک کامپیوتر x86-64 است و موتور C++17 قابل‌حمل ا
 ```bash
 # ۱) لینوکس را بالا بیاور (payload Linux؛ توزیع مخصوص PS4 مثل psxitarch)
 # ۲) کد را بگیر
-git clone --branch arena/01a080a4-ai-codespace https://github.com/javadxpro/AI-codespace.git
-cd AI-codespace
+git clone --branch arena/01a0c3a7-kimia-engine https://github.com/javadxpro/KIMIA-ENGINE.git
+cd KIMIA-ENGINE
 # ۳) بیلد
 bash Tools/ps4_build.sh           # --run / --clean / --port=N
 # ۴) اجرا و اتصال از گوشی
