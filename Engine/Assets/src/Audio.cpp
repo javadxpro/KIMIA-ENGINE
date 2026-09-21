@@ -2,17 +2,12 @@
 
 #include <kimia/VendoredWarnings.h>
 
-// Vendored third-party code: keep strict warnings scoped to our own code, using
-// the compiler-appropriate spelling (see kimia/VendoredWarnings.h — MSVC treats
-// `#pragma GCC ...` as warning C4068 and /WX then fails the build).
-KIMIA_VENDORED_WARNINGS_PUSH
-#define DR_WAV_IMPLEMENTATION
-#define DR_MP3_IMPLEMENTATION
-#define DR_FLAC_IMPLEMENTATION
+// The decoders' implementations live in ThirdParty/dr/dr_impl.c (a vendored
+// translation unit built outside the strict warning gate); this file reads the
+// declarations only, so it stays under the full gate.
 #include <dr_flac.h>
 #include <dr_mp3.h>
 #include <dr_wav.h>
-KIMIA_VENDORED_WARNINGS_POP
 
 #include <algorithm>
 #include <cmath>

@@ -80,14 +80,23 @@ cmake --build build --target check      # بیلد + اجرای کامل تست�
 
 ---
 
-## ۴. دو استثنای مستند (نه پنهان)
+## ۴. استثناهای مستند (نه پنهان)
 
 1. **`ThirdParty/stb/stb_image_write_impl.c`** با
    `-fno-sanitize=shift-base,shift-exponent` کامپایل می‌شود. نویسندهٔ JPEG در
    stb عمداً بیت علامت را با شیفت چپ پر می‌کند و UBSan آن را undefined
    می‌داند. این فایل جداست تا **هر خطی که خودمان نوشتیم** زیر مجموعهٔ کامل
-   sanitizer بماند.
-2. **`Tests/src/WebTests.cpp`** مستقیم از سوکت POSIX استفاده می‌کند، پس
+   sanitizer بماند. (بقیهٔ کد vendored — `dr_impl.c` و `stb_image_impl.c` —
+   زیر sanitizer کامل هستند.)
+2. **پیاده‌سازی کتابخانه‌های تک‌فایلی** (`ThirdParty/dr/dr_impl.c`،
+   `ThirdParty/stb/stb_image_impl.c`، `stb_image_write_impl.c`) با
+   `KIMIA_STRICT_WARNINGS` و `-Werror`/`/WX` کامپایل **نمی‌شود**؛ فقط
+   اعلان‌های همان هدرها وارد کد ما می‌شوند. دلیل واقعی: در ویندوز،
+   `dr_wav.h` یک متغیر «ممکن است مقدار نگیرد» دارد (`fileSize`) که با
+   `/W4 /WX` بیلد را می‌شکند و `#pragma warning(push, 0)` هم آن را
+   نمی‌خواباند. نتیجه: کد ما زیر گیت سخت‌گیر می‌ماند و کد vendored نه؛
+   هیچ warningی پنهان نمی‌شود، فقط جای شکل‌گیری‌اش عوض شده است.
+3. **`Tests/src/WebTests.cpp`** مستقیم از سوکت POSIX استفاده می‌کند، پس
    `kimia_tests` روی ویندوز ساخته نمی‌شود؛ به همین دلیل `windows-msvc-smoke`
    فقط بیلد و `--version` را می‌سنجد. پورت کردن آن کار جداگانه‌ای است و در
    ROADMAP ثبت شده است.

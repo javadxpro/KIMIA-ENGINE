@@ -2,17 +2,12 @@
 
 #include <kimia/VendoredWarnings.h>
 
-// Vendored third-party code: keep strict warnings scoped to our own code, using
-// the compiler-appropriate spelling (see kimia/VendoredWarnings.h — MSVC treats
-// `#pragma GCC ...` as warning C4068 and /WX then fails the build).
-KIMIA_VENDORED_WARNINGS_PUSH
-#define STB_IMAGE_IMPLEMENTATION
-// stb_image_write's implementation lives in its own translation unit
-// (ThirdParty/stb/stb_image_write_impl.c) so the one sanitizer relaxation it
-// needs cannot cover our code; only the declarations are read here.
+// Both vendored implementations live in their own translation units
+// (ThirdParty/stb/stb_image_impl.c and stb_image_write_impl.c): only the
+// declarations are read here, so this file stays under the engine's full
+// warning gate.
 #include <stb_image.h>
 #include <stb_image_write.h>
-KIMIA_VENDORED_WARNINGS_POP
 
 #include <stdexcept>
 

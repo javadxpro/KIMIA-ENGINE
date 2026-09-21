@@ -236,6 +236,15 @@ target_include_directories(kimia_stb_vorbis SYSTEM PUBLIC ThirdParty/stb)
 # without patching the library.
 target_compile_options(kimia_stb_vorbis PRIVATE $<$<C_COMPILER_ID:Clang>:-Wno-tautological-compare>)
 
+# Vendored image decoder (stb_image.h), implementation only — its own TU keeps
+# the strict warning gate on our code instead of on 12k lines of vendored C.
+add_library(kimia_stb_image STATIC ThirdParty/stb/stb_image_impl.c)
+target_include_directories(kimia_stb_image SYSTEM PUBLIC ThirdParty/stb)
+
+# Vendored audio decoders (dr_wav/dr_mp3/dr_flac), implementation only.
+add_library(kimia_dr STATIC ThirdParty/dr/dr_impl.c)
+target_include_directories(kimia_dr SYSTEM PUBLIC ThirdParty/dr)
+
 # Vendored PNG/JPEG writer (stb_image_write.h), implementation only — see the
 # header comment in the file. Its JPEG entropy coder shifts a set bit into the
 # sign position deliberately (stb relies on two's complement), which UBSan
@@ -271,7 +280,7 @@ target_include_directories(kimia_assets SYSTEM PUBLIC
     ThirdParty/dr
 )
 target_link_libraries(kimia_assets PUBLIC kimia_core kimia_math kimia_ufbx kimia_stb_vorbis
-                                             kimia_stb_image_write)
+                                             kimia_stb_image kimia_stb_image_write kimia_dr)
 target_compile_options(kimia_assets PRIVATE ${KIMIA_STRICT_WARNINGS})
 if(KIMIA_WERROR)
   target_compile_options(kimia_assets PRIVATE ${KIMIA_WERROR_FLAGS})
