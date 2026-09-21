@@ -105,8 +105,27 @@ jobs:
             -DKIMIA_BUILD_PC=OFF `
             -DKIMIA_ENABLE_D3D11=ON
       - name: Build
-        shell: pwsh
-        run: cmake --build build -j 4
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build -j 4 2>&1 | tee build.log
+      # A red job has to say WHY. The compiler's own lines are turned into
+      # annotations and the full log is uploaded, so a failure is readable
+      # without downloading logs (which the API sometimes refuses to hand out).
+      - name: Report build errors as annotations
+        if: failure()
+        shell: bash
+        run: |
+          grep -E "error C[0-9]+|fatal error|warning C[0-9]+|LNK[0-9]+" build.log | head -8 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: msvc-build-log
+          path: build.log
+          if-no-files-found: ignore
       - name: Smoke (version)
         shell: pwsh
         run: .\build\bin\kimia_world.exe --version
@@ -129,6 +148,21 @@ jobs:
       - name: Configure
         run: cmake --preset webgl-release
       - name: Build
-        run: cmake --build --preset webgl-release -j"$(nproc)"
+        run: |
+          set -o pipefail
+          cmake --build --preset webgl-release -j"$(nproc)" 2>&1 | tee build.log
+      - name: Report build errors as annotations
+        if: failure()
+        run: |
+          grep -E "error:|Error:|fatal error" build.log | head -8 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-build-log
+          path: build.log
+          if-no-files-found: ignore
       - name: Check the produced page
         run: test -f out/build/webgl-release/bin/kimia_webgl.html
