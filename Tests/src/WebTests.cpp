@@ -344,11 +344,24 @@ KIMIA_TEST(web_restart_and_ephemeral_port) {
   KIMIA_REQUIRE(server.start(0, makeTestPage()));
   const u16 firstPort = server.port();
   KIMIA_REQUIRE(firstPort > 0);
+  KIMIA_REQUIRE(request(firstPort, "GET", "/").status == 200);
   server.stop();
   KIMIA_REQUIRE(!server.running());
+  // stop() is idempotent: the listener is shut down and closed once, and the
+  // accept thread is joined once. The released port is reported as 0.
+  server.stop();
+  KIMIA_REQUIRE(!server.running());
+  KIMIA_REQUIRE(server.port() == 0);
+  // Starting again on the same object comes up listening AND serving on a
+  // fresh descriptor. This is the behaviour the ThreadSanitizer finding was
+  // about: the descriptor is closed only after the listener thread has been
+  // joined, so the number cannot be reused under it.
   KIMIA_REQUIRE(server.start(0, makeTestPage()));
   KIMIA_REQUIRE(server.running());
+  KIMIA_REQUIRE(request(server.port(), "GET", "/").status == 200);
   server.stop();
+  KIMIA_REQUIRE(!server.running());
+  KIMIA_REQUIRE(server.port() == 0);
 }
 
 // --- Branding: the intro film ---
