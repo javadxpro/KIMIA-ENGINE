@@ -79,10 +79,14 @@ cameraController.applyTo(scene, width, height);
   replay, skill replay, intro) and the replay stream are phase 7 features with
   their own acceptance criteria; building the names now would leave two empty
   systems next to each other, which the plan explicitly forbids.
-* `World.h` (1145 lines) and `World.cpp` (3818 lines) still hold the editor,
-  the builder screens, the physics bridge and the animation bridge in one
-  translation unit. Phase 3 (scene/entity, serialization) is the right moment
-  to split them, because that is when the component list changes.
+* `World.h` still holds the editor's whole interface (one class), and
+  `World.cpp` still holds its lifecycle, the play loop, shooting/passing and
+  the physics bridge. The modules that no longer need to be in it are out:
+  the AI, the match rules, animation, the camera's subject, dialogue and
+  arena mode each have their own file now, and the toolbox they share is
+  `Engine/World/src/WorldInternal.h`. What is left of the split is the play
+  loop itself, which belongs with `WorldRuntime` (phase 7: a replay is
+  exactly "the runtime, re-run from recorded input").
 
 ## Verification
 

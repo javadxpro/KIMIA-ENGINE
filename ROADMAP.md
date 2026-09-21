@@ -41,7 +41,9 @@
   ([سند Scene](Documentation/Scene.md)،
   [سند موتور کاراکتر](Documentation/CharacterMotor.md))؛ باقی‌مانده:
   `Ability` (فاز ۶)، `ReplayMarker` (فاز ۷)
-- فاز ۲: `WorldRuntime`, `CinematicCamera`, `ReplaySystem` — با فاز ۷ می‌آیند
+- فاز ۲: شکستن `World.cpp` ✅ (۱۴ فایل، هر کدام یک حوزه، بدون تغییر رفتار —
+  [Architecture](Documentation/Architecture.md))؛ `WorldRuntime`,
+  `CinematicCamera`, `ReplaySystem` با فاز ۷ می‌آیند
 - هم‌سازی کامل مسیر رندر D3D11 با GL (همان PBR/تون‌مپ)
 - ~~راستی‌آزمایی واقعی بیلد WebAssembly/Emscripten~~ — job `wasm-smoke` در
   CI سبز شد (اجرای 35596687112) و دو باگ واقعی پیدا کرد که یکی‌شان
