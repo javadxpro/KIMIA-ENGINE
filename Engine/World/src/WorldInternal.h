@@ -15,6 +15,7 @@
 // Every name here is an implementation detail, which is why they live in
 // `worldinternal` and not in `kimia`: the public surface stays World.h.
 
+#include <kimia/GameProfile.h>  // kWorldPlayerSlow/Fast: the pace presets
 #include <kimia/Scene.h>
 #include <kimia/Types.h>
 #include <kimia/Vec.h>
@@ -35,6 +36,10 @@ inline constexpr f64 kGoalCelebration = 2.0;  // seconds after a goal (or a hole
 // the halfway line (z == 0) counts for team 1: the classic single-goal
 // kickabout every world built so far shoots toward -Z.
 inline u32 scoringTeamForGoalZ(f64 goalZ) { return goalZ <= 0.0 ? 1U : 2U; }
+
+// Which way this team is attacking: team 1 defends +Z and shoots toward -Z,
+// team 2 the other way round. Matches scoringTeamForGoalZ.
+inline f64 attackDirectionZ(u32 team) { return team == 1U ? -1.0 : 1.0; }
 
 inline constexpr f64 kKickMaxSpeed = 8.0;  // a ball rolling faster is not re-kicked
 inline constexpr f64 kMoveEpsilon = 1e-6;
