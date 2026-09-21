@@ -15,8 +15,13 @@
 #include <kimia/Renderer.h>
 #include <kimia/RuntimeLoop.h>
 #include <kimia/WebViewer.h>
+#include <kimia/AssetManager.h>
 #include <kimia/AssetPipeline.h>
+#include <kimia/CameraController.h>
+#include <kimia/GameplayEvents.h>
+#include <kimia/InputRouter.h>
 #include <kimia/OrbitCamera.h>
+#include <kimia/RenderSceneBuilder.h>
 #include <kimia/Hud.h>
 #include <kimia/Input.h>
 #include <kimia/Particles.h>
@@ -29,12 +34,12 @@
 
 #ifdef KIMIA_EMBEDDED_ASSETS
 #include <kimia/EmbeddedAssets.h>
-#include <filesystem>
-#include <fstream>
 #endif
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <chrono>
 #include <mutex>
 #include <cmath>
@@ -125,8 +130,9 @@ int runGpuInfo() {
   return 0;
 }
 
-const Vec3 kGhostColor{1.0, 0.85, 0.2};
-const Vec3 kSelectionColor{1.0, 0.9, 0.25};
+// HUD palette, sizes and margins. The shapes and figures that used to sit
+// here moved into Engine/View (RenderSceneBuilder); these four are the
+// app's own presentation of the engine's HUD lines.
 const Vec3 kHudText{1.0, 1.0, 1.0};
 const Vec3 kHudBackdrop{0.0, 0.0, 0.0};
 const Vec3 kPowerFill{1.0, 0.55, 0.1};
@@ -164,301 +170,10 @@ void drawHud(Image& image, const WorldEditor& editor) {
   }
 }
 
-// Sound cues are procedural (no asset files): registered once with the web
-// server, cued by name when the world reports an event.
+// The sound bank comes from the engine (GameplayEvents.h) so the cues an
+// event raises and the sounds the app registers cannot drift apart.
 void registerSounds(kimia::web::Server& server) {
-  using kimia::AudioBuffer;
-  server.registerSound("shot", AudioBuffer::thock(0.12, 1400.0).encodeWAV());
-  server.registerSound("kick", AudioBuffer::thock(0.16, 700.0).encodeWAV());
-  server.registerSound("holed",
-                       AudioBuffer::concat(AudioBuffer::tone(660.0, 0.12), AudioBuffer::tone(990.0, 0.25)).encodeWAV());
-  server.registerSound("goal", AudioBuffer::tone(440.0, 0.5, 0.6, 880.0).encodeWAV());
-  server.registerSound(
-      "round", AudioBuffer::concat(AudioBuffer::concat(AudioBuffer::tone(523.25, 0.15), AudioBuffer::tone(659.25, 0.15)),
-                                   AudioBuffer::tone(783.99, 0.35))
-                   .encodeWAV());
-  // Stage 28. A referee's whistle is a shrill held note; a tackle is a
-  // duller, lower thock than a clean kick; a completed trick is a bright
-  // little rising flourish.
-  server.registerSound("whistle", AudioBuffer::tone(2100.0, 0.30, 0.5, 2400.0).encodeWAV());
-  server.registerSound("tackle", AudioBuffer::thock(0.20, 320.0).encodeWAV());
-  server.registerSound("trick",
-                       AudioBuffer::concat(AudioBuffer::tone(880.0, 0.09), AudioBuffer::tone(1318.5, 0.16))
-                           .encodeWAV());
-}
-
-const char* soundFor(WorldEditor::GameEvent event) {
-  switch (event) {
-    case WorldEditor::GameEvent::Shot: return "shot";
-    case WorldEditor::GameEvent::Kick: return "kick";
-    case WorldEditor::GameEvent::Holed: return "holed";
-    case WorldEditor::GameEvent::Goal: return "goal";
-    case WorldEditor::GameEvent::RoundOver: return "round";
-    case WorldEditor::GameEvent::Whistle: return "whistle";
-    case WorldEditor::GameEvent::Tackle: return "tackle";
-    case WorldEditor::GameEvent::Trick: return "trick";
-  }
-  return "shot";
-}
-
-// Shortest signed angle from `from` to `to` (radians).
-f64 angleDelta(f64 from, f64 to) {
-  f64 delta = std::fmod(to - from + kimia::kPi, 2.0 * kimia::kPi);
-  if (delta < 0.0) delta += 2.0 * kimia::kPi;
-  return delta - kimia::kPi;
-}
-
-// A single-entity goal (scale.x = width, scale.y = height) drawn as two
-// posts and a crossbar.
-void addGoalShape(RenderScene& scene, const EntityData& entity, const MeshData& cube) {
-  const f64 width = entity.transform.scale.x;
-  const f64 half = entity.transform.scale.y * 0.5;
-  const Vec3 at = entity.transform.position;
-  const Vec3 color = entity.color;
-  const Mat4 spin = Mat4::translation(at) * entity.transform.rotation.toMat4() *
-                    Mat4::translation(Vec3{-at.x, -at.y, -at.z});
-  scene.objects.push_back(
-      {&cube, spin * Mat4::translation(Vec3{at.x - width * 0.5 + 0.06, at.y, at.z}) *
-                  Mat4::scaling(Vec3{0.12, entity.transform.scale.y, 0.12}),
-       color, entity.roughness});
-  scene.objects.push_back(
-      {&cube, spin * Mat4::translation(Vec3{at.x + width * 0.5 - 0.06, at.y, at.z}) *
-                  Mat4::scaling(Vec3{0.12, entity.transform.scale.y, 0.12}),
-       color, entity.roughness});
-  scene.objects.push_back(
-      {&cube, spin * Mat4::translation(Vec3{at.x, at.y + half, at.z}) *
-                  Mat4::scaling(Vec3{width + 0.12, 0.12, 0.12}),
-       color, entity.roughness});
-}
-
-void addSelectionMarkers(RenderScene& scene, const EntityData& entity, const MeshData& cube) {
-  const Vec3 half = entity.transform.scale * 0.5;
-  const Vec3 at = entity.transform.position;
-  const f64 marker = 0.06;
-  for (i32 sx = -1; sx <= 1; sx += 2) {
-    for (i32 sy = -1; sy <= 1; sy += 2) {
-      for (i32 sz = -1; sz <= 1; sz += 2) {
-        const Vec3 corner{at.x + half.x * static_cast<f64>(sx), at.y + half.y * static_cast<f64>(sy),
-                          at.z + half.z * static_cast<f64>(sz)};
-        scene.objects.push_back(
-            {&cube, Mat4::translation(corner) * Mat4::scaling(Vec3{marker, marker, marker}),
-             kSelectionColor, 0.9});
-      }
-    }
-  }
-}
-
-void addGhostShape(RenderScene& scene, const WorldEditor& editor, const MeshData& cube,
-                   const MeshData& sphere) {
-  const Vec3 ghost = editor.ghostPosition();
-  const f64 size = editor.ghostSize();
-  switch (editor.ghostKind()) {
-    case ObjectKind::Player: {
-      scene.objects.push_back({&cube, Mat4::translation(Vec3{ghost.x, 0.5, ghost.z}) *
-                                          Mat4::scaling(Vec3{0.6, 1.0, 0.6}),
-                               kGhostColor, 0.9});
-      scene.objects.push_back({&cube, Mat4::translation(Vec3{ghost.x, 1.15, ghost.z}) *
-                                          Mat4::scaling(Vec3{0.3, 0.3, 0.3}),
-                               kGhostColor, 0.9});
-      break;
-    }
-    case ObjectKind::Ball: {
-      const f64 radius = editor.world().ball.radius;
-      scene.objects.push_back({&sphere, Mat4::translation(Vec3{ghost.x, radius, ghost.z}) *
-                                            Mat4::scaling(Vec3{radius, radius, radius}),
-                               kGhostColor, 0.9});
-      break;
-    }
-    case ObjectKind::Block:
-    case ObjectKind::Crate:
-    case ObjectKind::Model:
-      scene.objects.push_back({&cube, Mat4::translation(Vec3{ghost.x, size * 0.5, ghost.z}) *
-                                          Mat4::scaling(Vec3{size, size, size}),
-                               kGhostColor, 0.9});
-      break;
-    case ObjectKind::Wall:
-      scene.objects.push_back(
-          {&cube, Mat4::translation(Vec3{ghost.x, 0.5, ghost.z}) *
-                      Mat4::scaling(editor.ghostAxisZ() ? Vec3{0.5, 1.0, size} : Vec3{size, 1.0, 0.5}),
-           kGhostColor, 0.9});
-      break;
-    case ObjectKind::Goal: {
-      EntityData preview;
-      preview.transform.position = Vec3{ghost.x, kimia::kWorldGoalHeight * 0.5, ghost.z};
-      preview.transform.scale = Vec3{size, kimia::kWorldGoalHeight, 0.12};
-      preview.color = kGhostColor;
-      preview.roughness = 0.9;
-      addGoalShape(scene, preview, cube);
-      break;
-    }
-    case ObjectKind::Hole: {
-      // The cup preview: a flat disc (a squashed sphere), drawn slightly
-      // above the ground so it is visible while placing.
-      const f64 radius = kimia::kWorldHoleRadius;
-      scene.objects.push_back({&sphere, Mat4::translation(Vec3{ghost.x, 0.03, ghost.z}) *
-                                            Mat4::scaling(Vec3{radius, 0.03, radius}),
-                               kGhostColor, 0.9});
-      break;
-    }
-    default:
-      break;
-  }
-}
-
-// Shot mode: a chain of small markers along the aim direction on the ground.
-// The chain grows with the charge, like the reference golf's indicator.
-void addAimIndicator(RenderScene& scene, const WorldEditor& editor, const MeshData& cube) {
-  if (!editor.shotMode() || !editor.playing() || !editor.ballAtRest()) return;
-  const Vec3 from = editor.ballPosition();
-  const Vec3 direction = editor.aimDirection();
-  const f64 reach = 1.0 + (editor.charging() ? editor.power() : 0.0) * 4.0;
-  const i32 count = 6;
-  for (i32 i = 1; i <= count; ++i) {
-    const f64 t = static_cast<f64>(i) / static_cast<f64>(count);
-    const Vec3 at = from + direction * (reach * t);
-    const f64 marker = 0.05 + 0.02 * (1.0 - t);
-    scene.objects.push_back(
-        {&cube, Mat4::translation(Vec3{at.x, marker * 0.5, at.z}) * Mat4::scaling(Vec3{marker, marker, marker}),
-         kGhostColor, 0.9});
-  }
-}
-
-// The squads (stage 21) were spawned in physics but never actually DRAWN,
-// which nobody noticed while they stood still. Now that stage 27 has them
-// running about, an invisible opposition makes a match unplayable. Each
-// character is a coloured box: our side in blue, theirs in red.
-// Lays a set of limb segments into the scene as stretched cubes.
-void addLimbs(RenderScene& scene, const MeshData& cube, const std::vector<kimia::FigureLimb>& limbs,
-              const Vec3& color) {
-  for (const kimia::FigureLimb& limb : limbs) {
-    const Vec3 along = limb.to - limb.from;
-    const f64 length = along.length();
-    if (length < 1e-4) continue;
-    const Vec3 middle = limb.from + along * 0.5;
-    const Vec3 up{0.0, 1.0, 0.0};
-    const Vec3 dir = along * (1.0 / length);
-    const f64 dot = up.x * dir.x + up.y * dir.y + up.z * dir.z;
-    Mat4 orient;
-    if (dot < 0.9999) {
-      if (dot < -0.9999) {
-        orient = Mat4::rotationX(3.14159265358979323846);
-      } else {
-        const Vec3 axis{up.y * dir.z - up.z * dir.y, up.z * dir.x - up.x * dir.z, up.x * dir.y - up.y * dir.x};
-        orient = kimia::Quat::fromAxisAngle(axis, std::acos(dot)).toMat4();
-      }
-    }
-    scene.objects.push_back({&cube,
-                             Mat4::translation(middle) * orient *
-                                 Mat4::scaling(Vec3{limb.thickness, length, limb.thickness}),
-                             color, 1.0, 0.0, nullptr});
-  }
-}
-
-// One rig shared by everyone: it is a fixed shape, so building it per
-// character per frame would be waste.
-const kimia::Skeleton& figureRig() {
-  static const kimia::Skeleton rig = kimia::makeFigureRig(1.7);
-  return rig;
-}
-
-// Draws one posed figure as a set of limb segments. Each segment is a
-// stretched cube laid along the bone, which is all the software rasteriser
-// needs and reads far better than the single box these used to be.
-void addFigure(RenderScene& scene, const MeshData& cube, const kimia::Skeleton& rig,
-               const kimia::FigureMotion& motion, const Vec3& at, f64 facing, const Vec3& color) {
-  static std::vector<kimia::Transform3D> pose;
-  static std::vector<kimia::FigureLimb> limbs;
-  kimia::poseFigure(rig, motion, pose);
-  kimia::figureLimbs(rig, pose, at, facing, limbs);
-  addLimbs(scene, cube, limbs, color);
-}
-
-// Draws a character using bones the user drew themselves.
-void addCustomFigure(RenderScene& scene, const MeshData& cube, const std::vector<kimia::CustomBone>& bones,
-                     const kimia::FigureMotion& motion, const Vec3& at, f64 facing, const Vec3& color) {
-  static std::vector<kimia::FigureLimb> limbs;
-  kimia::customFigureLimbs(bones, motion, at, facing, limbs);
-  addLimbs(scene, cube, limbs, color);
-}
-
-// The bones a squad member should use, or null for the engine's figure.
-// A character's rig is read off the scene entity that represents it: the
-// human uses "Player", and everyone else falls back to a "Squad" entity if
-// the world defines one, so a whole team can be re-boned in one go.
-const std::vector<kimia::CustomBone>* customRigFor(const WorldEditor& editor, kimia::u32 id) {
-  static std::vector<kimia::CustomBone> converted;
-  const char* wanted = id == kimia::kPrimaryCharacter ? "Player" : "Squad";
-  const kimia::EntityData* entity = editor.entity(wanted);
-  if (entity == nullptr && id == kimia::kPrimaryCharacter) return nullptr;
-  if (entity == nullptr || entity->rig.empty()) {
-    entity = editor.entity("Player");
-    if (entity == nullptr || entity->rig.empty()) return nullptr;
-  }
-  converted.clear();
-  converted.reserve(entity->rig.size());
-  for (const kimia::RigBone& bone : entity->rig) {
-    kimia::CustomBone out;
-    out.name = bone.name;
-    out.parent = bone.parent;
-    out.from = bone.from;
-    out.to = bone.to;
-    out.thickness = bone.thickness;
-    out.swing = bone.swing;
-    converted.push_back(out);
-  }
-  return &converted;
-}
-
-void addSquads(RenderScene& scene, const WorldEditor& editor, const MeshData& cube) {
-  if (!editor.playing() || editor.squadCount() <= 1U) return;
-  const Vec3 ourColor{0.25, 0.45, 0.95};
-  const Vec3 theirColor{0.90, 0.25, 0.25};
-  const Vec3 keeperColor{0.95, 0.85, 0.20};  // the keeper stands out
-  for (const kimia::u32 id : editor.squadIds()) {
-    // The human is already drawn as the Player entity in the scene.
-    if (id == kimia::kPrimaryCharacter) continue;
-    const Vec3 at = editor.squadPosition(id);
-    const kimia::u32 team = editor.squadTeam(id);
-    Vec3 color = team == 1U ? ourColor : theirColor;
-    const bool down = editor.arenaMode() && editor.downed(id);
-    if (down) {
-      color = Vec3{0.45, 0.45, 0.45};
-    } else if (!editor.arenaMode() && id == editor.aiKeeper(team)) {
-      color = keeperColor;
-    }
-    // A jointed figure, not a sliding box (stage 33).
-    kimia::FigureMotion motion;
-    motion.speed = editor.squadSpeed(id);
-    motion.time = editor.figureClock();
-    motion.airborne = editor.squadAirborne(id);
-    motion.downed = down;
-    // The feet belong on the floor: the body position is its centre.
-    const Vec3 feet{at.x, at.y - kimia::kWorldPlayerRadius - 0.15, at.z};
-    // A character with bones of its own uses them (stage 35). The engine's
-    // figure is only the fallback for anyone who has not drawn one.
-    const std::vector<kimia::CustomBone>* own = customRigFor(editor, id);
-    if (own != nullptr) {
-      addCustomFigure(scene, cube, *own, motion, feet, editor.squadFacing(id), color);
-    } else {
-      addFigure(scene, cube, figureRig(), motion, feet, editor.squadFacing(id), color);
-    }
-  }
-}
-
-// Course: a small flag pole on the cup being played, so the player can see
-// which cup is next (the others are plain discs). Nothing on a finished round.
-void addCurrentCupFlag(RenderScene& scene, const WorldEditor& editor, const MeshData& cube) {
-  if (!editor.holeScoring() || !editor.playing() || editor.roundOver()) return;
-  const kimia::EntityData* cup = editor.world().scene.get(editor.world().scene.find(editor.currentHoleName()));
-  if (cup == nullptr) return;
-  const Vec3 base = cup->transform.position;
-  const f64 poleHeight = 1.2;
-  scene.objects.push_back({&cube, Mat4::translation(Vec3{base.x, poleHeight * 0.5, base.z}) *
-                                      Mat4::scaling(Vec3{0.04, poleHeight, 0.04}),
-                           Vec3{0.92, 0.92, 0.92}, 0.6});
-  scene.objects.push_back({&cube, Mat4::translation(Vec3{base.x + 0.16, poleHeight - 0.12, base.z}) *
-                                      Mat4::scaling(Vec3{0.3, 0.2, 0.02}),
-                           Vec3{0.9, 0.15, 0.1}, 0.8});
+  for (const auto& cue : kimia::gameplaySoundBank()) server.registerSound(cue.first, cue.second);
 }
 
 }  // namespace
@@ -656,6 +371,18 @@ int runWorldServer(const WorldServerOptions& opts) {
       return 2;
     }
   } else {
+    // The world named on the command line, when there is one: `--world FILE`
+    // is documented as "save/load", and this is the load half. It used to be
+    // the save path only, so asking the editor to open a world silently
+    // opened the demo instead.
+    std::string startError;
+    bool opened = false;
+    if (std::filesystem::exists(worldPath)) {
+      opened = editor.loadWorld(worldPath, startError);
+      if (!opened) {
+        std::printf("cannot open the world '%s': %s\n", worldPath.c_str(), startError.c_str());
+      }
+    }
     // The Workbench needs a non-empty world for Hierarchy/Inspector/Project
     // to have anything to show. Try the shipped "street kids" demo first;
     // if that is missing (e.g. a freshly-built tree without the embedded
@@ -664,14 +391,23 @@ int runWorldServer(const WorldServerOptions& opts) {
     const std::string streetDemo =
         (assetsDir == "assets" ? std::string("Worlds/street_kids.kimia")
                                : assetsDir + "/../Worlds/street_kids.kimia");
-    std::string startError;
-    if (!editor.loadWorld(streetDemo, startError)) {
-      const kimia::GameProfile* golf = nullptr;
+    if (!opened && !editor.loadWorld(streetDemo, startError)) {
+      // builtinProfiles() returns its vector BY VALUE, so the profile has to
+      // be copied out of the loop. Holding a pointer into that range-for left
+      // it dangling the moment the loop ended, and this fallback — reached
+      // whenever Worlds/street_kids.kimia is not next to the asset folder —
+      // crashed on startup instead of building the stand-in world.
+      kimia::GameProfile golf;
+      bool hasGolf = false;
       for (const kimia::GameProfile& p : kimia::builtinProfiles()) {
-        if (p.name == "golf") { golf = &p; break; }
+        if (p.name == "golf") {
+          golf = p;
+          hasGolf = true;
+          break;
+        }
       }
-      if (golf != nullptr) {
-        editor.createWorld(*golf);
+      if (hasGolf) {
+        editor.createWorld(golf);
         editor.createObject("player", Vec3{0.0, 0.0, 4.0});
         editor.createObject("ball", Vec3{0.0, 0.0, 3.0});
         editor.createObject("hole", Vec3{0.0, 0.0, -2.0});
@@ -786,24 +522,18 @@ int runWorldServer(const WorldServerOptions& opts) {
         return kimia::studio::saveAssetFile(editor, params, body);
       });
 
-  const MeshData cubeMesh = kimia::makeCube(1.0);
-  const MeshData planeMesh = kimia::makePlane(1.0, 1.0);
-  const MeshData sphereMesh = kimia::makeSphere(16, 8);
+  // The frame's three engine-side helpers (see Documentation/Architecture.md):
+  // a file read goes through the asset manager, the draw list comes from the
+  // scene builder, and the camera rig is the camera controller. The loop
+  // itself only moves data between them.
+  kimia::AssetManager assets;
+  assets.addRoot(assetsDir);
+  kimia::RenderSceneBuilder sceneBuilder(assets);
+  kimia::CameraController cameraController;
   i32 width = frameWidth;
   i32 height = frameHeight;
 
   std::signal(SIGINT, onSignal);
-  std::map<std::string, kimia::MeshData> loadedMeshes;  // meshFile -> mesh
-  std::map<std::string, kimia::MeshData> posedMeshes;  // entity name -> this frame's pose
-  // Diffuse textures, keyed by the same mesh file (stage 34). An entry with
-  // an empty image means "this model has no texture" — cached too, so a
-  // model without one is not re-examined every frame.
-  std::map<std::string, kimia::Image> loadedTextures;
-  kimia::OrbitCamera orbitCamera;  // arrow keys orbit, q/e zoom, c resets
-  // The distance the player chose by hand. A broadcast camera moves
-  // orbitCamera.distance around every frame, so the manual zoom is
-  // remembered here and used as the resting point to work from.
-  f64 restingCameraDistance = orbitCamera.distance;
   const auto frameStart = std::chrono::steady_clock::now();
   auto lastTime = frameStart;
   // Cap the web loop at maxFps. Every frame is a full software raster plus a
@@ -833,374 +563,37 @@ int runWorldServer(const WorldServerOptions& opts) {
     // and the API handler takes this one, so holding both at once here
     // would be a lock-order inversion. It deadlocked the first time it ran.
     std::unique_lock<std::mutex> editorLock(editorMutex);
-    if (input.pressed(Key::Num1)) editor.choose(0);
-    if (input.pressed(Key::Num2)) editor.choose(1);
-    if (input.pressed(Key::Num3)) editor.choose(2);
-    if (input.pressed(Key::Num4)) editor.choose(3);
-    if (input.pressed(Key::Num5)) editor.choose(4);
-    if (input.pressed(Key::Num6)) editor.choose(5);
-    if (input.pressed(Key::Num7)) editor.choose(6);
-    if (input.pressed(Key::Num8)) editor.choose(7);
-    if (input.pressed(Key::Num9)) editor.choose(8);
-    if (input.pressed(Key::R)) editor.resetBall();
-    if (input.pressed(Key::B)) editor.backToMenu();
-    // Transport (the Unity toolbar, on the keyboard): Return starts Play
-    // from any editor screen, Tab pauses the sim, Backspace steps a frame.
-    if (input.pressed(Key::Return) && editor.hasWorld() && !editor.playing()) editor.enterPlayMode();
-    if (input.pressed(Key::Tab) && editor.playing()) editor.setPaused(!editor.paused());
-    if (input.pressed(Key::Backspace) && editor.paused()) editor.stepOnce(1.0 / 60.0);
-    const bool padAction = input.gamepadDown(GamepadButton::A);
-    const bool padActionPressed = input.gamepadPressed(GamepadButton::A);
-    const bool mouseAction = input.mouseDown(MouseButton::Left);
-    const bool mouseActionPressed = input.mousePressed(MouseButton::Left);
-    if (editor.shotMode()) {
-      // Golf-style: hold Space, the left mouse button or gamepad A to charge;
-      // release to shoot. All three routes feed the same game action.
-      editor.setShootHeld(input.down(Key::Space) || mouseAction || padAction);
-    } else {
-      editor.setShootHeld(false);
-      if (input.pressed(Key::J) || input.pressed(Key::Space) || mouseActionPressed || padActionPressed) {
-        editor.jumpPressed();
-      }
-    }
-    // Ball control (stage 23): hold C to dribble, hold Q/E to curl the next
-    // strike left/right, tap P to pass to the nearest team-mate ahead.
-    editor.setDribbleHeld(input.down(Key::C));
-    f64 curl = 0.0;
-    if (input.down(Key::Q)) curl -= 1.0;
-    if (input.down(Key::E)) curl += 1.0;
-    if (curl != 0.0) editor.setCurl(curl);
-    if (input.pressed(Key::P)) editor.pass();
-
-    // --- Keys for the rules and the wiring ---
-    // Every letter key is reported to the logic by name, so a rule saying
-    // "when key k" works with no engine change, and a component wired to
-    // "k" fires at the same moment.
-    static const std::pair<Key, const char*> kNamedKeys[] = {
-        {Key::A, "a"}, {Key::B, "b"}, {Key::C, "c"}, {Key::D, "d"}, {Key::E, "e"}, {Key::F, "f"},
-        {Key::G, "g"}, {Key::H, "h"}, {Key::I, "i"}, {Key::J, "j"}, {Key::K, "k"}, {Key::L, "l"},
-        {Key::M, "m"}, {Key::N, "n"}, {Key::O, "o"}, {Key::P, "p"}, {Key::Q, "q"}, {Key::R, "r"},
-        {Key::S, "s"}, {Key::T, "t"}, {Key::U, "u"}, {Key::V, "v"}, {Key::W, "w"}, {Key::X, "x"},
-        {Key::Y, "y"}, {Key::Z, "z"}, {Key::Space, "space"}, {Key::Up, "up"}, {Key::Down, "down"},
-        {Key::Left, "left"}, {Key::Right, "right"}, {Key::Return, "return"},
-    };
-    std::vector<std::string> pressedNames;
-    std::vector<std::string> heldNames;
-    for (const auto& binding : kNamedKeys) {
-      if (input.pressed(binding.first)) {
-        pressedNames.push_back(binding.second);
-        editor.fireTrigger(binding.second);  // components wired to this key
-      }
-      if (input.down(binding.first)) heldNames.push_back(binding.second);
-    }
-    editor.setLogicKeys(pressedNames, heldNames);
-
-    // The input map turns a raw control into the game's own action, so a
-    // rule listens for "jump" rather than for a particular key. Native
-    // controller buttons use the same action map as WebWorkbench pads.
-    for (const std::string& key : pressedNames) {
-      const std::string action = editor.actionFromControl(kimia::Source::Key, key);
-      if (!action.empty()) editor.fireControl(action);
-    }
-    static const std::pair<GamepadButton, const char*> kGamepadButtons[] = {
-        {GamepadButton::A, "a"},          {GamepadButton::B, "b"},
-        {GamepadButton::X, "x"},          {GamepadButton::Y, "y"},
-        {GamepadButton::LeftShoulder, "l1"}, {GamepadButton::RightShoulder, "r1"},
-        {GamepadButton::Back, "back"},    {GamepadButton::Start, "start"},
-        {GamepadButton::DpadUp, "up"},     {GamepadButton::DpadDown, "down"},
-        {GamepadButton::DpadLeft, "left"}, {GamepadButton::DpadRight, "right"},
-    };
-    for (const auto& binding : kGamepadButtons) {
-      if (!input.gamepadPressed(binding.first)) continue;
-      const std::string action = editor.actionFromControl(kimia::Source::Pad, binding.second);
-      if (!action.empty()) editor.fireControl(action);
-    }
-    // Skill moves (stage 26): tap N to nutmeg, O to roulette, U to juggle.
-    // They are taps because you commit to them — there is no holding back
-    // half way through a nutmeg.
-    // Arena mode (stage 30): hold F to fire, tap R to reload. The football
-    // keys below are harmless there — there is no ball to kick.
-    if (editor.arenaMode()) {
-      editor.setFireHeld(input.down(Key::F));
-      if (input.pressed(Key::R)) editor.reload();
-    }
-    if (input.pressed(Key::N)) editor.startTrick(WorldEditor::Trick::Nutmeg);
-    if (input.pressed(Key::O)) editor.startTrick(WorldEditor::Trick::Roulette);
-    if (input.pressed(Key::U)) editor.startTrick(WorldEditor::Trick::Juggle);
-
-    f64 moveX = 0.0;
-    f64 moveZ = 0.0;
-    if (input.down(Key::Left)) moveX -= 1.0;
-    if (input.down(Key::Right)) moveX += 1.0;
-    if (input.down(Key::Up)) moveZ -= 1.0;
-    if (input.down(Key::Down)) moveZ += 1.0;
-    const f64 stickX = input.gamepadAxis(kimia::GamepadAxis::LeftX);
-    const f64 stickY = input.gamepadAxis(kimia::GamepadAxis::LeftY);
-    if (std::abs(stickX) > std::abs(moveX)) moveX = stickX;
-    if (std::abs(stickY) > std::abs(moveZ)) moveZ = stickY;
-    editor.setMoveInput(moveX, moveZ);
-    editor.setFineMove(input.down(Key::Shift));
-    const f64 padLookX = input.gamepadAxis(kimia::GamepadAxis::RightX) * 90.0;
-    const f64 padLookY = input.gamepadAxis(kimia::GamepadAxis::RightY) * 70.0;
-    if (editor.cameraControlled()) {
-      // Orbit the camera with the arrows (and the mouse on desktop); the
-      // same pads drive the ghost/player in placing, moving and playing.
-      orbitCamera.orbit((moveX * 1.1 + input.lookX * 0.006 + padLookX) * dt,
-                        (-moveZ * 0.9 + input.lookY * 0.006 + padLookY) * dt);
-      if (input.pressed(Key::Q)) orbitCamera.zoom(1.0 / 1.2);
-      if (input.pressed(Key::E)) orbitCamera.zoom(1.2);
-      if (input.zoom != 0.0) orbitCamera.zoom(std::pow(1.2, -input.zoom));
-      if (input.pressed(Key::C)) orbitCamera.reset();
-      restingCameraDistance = orbitCamera.distance;  // remember the hand-set zoom
-    } else {
-      orbitCamera.orbit(input.lookX * 0.006 + padLookX * dt, input.lookY * 0.006 + padLookY * dt);
-      if (input.zoom != 0.0) orbitCamera.zoom(std::pow(1.2, -input.zoom));
-    }
+    // One call turns this frame's keys, mouse and controller into what the
+    // world should do (Engine/View/InputRouter). The camera contract it
+    // returns is applied to the rig immediately, exactly where the inline
+    // version used to orbit and zoom.
+    const kimia::RoutedInput routed = kimia::routeEditorInput(editor, input, dt);
+    cameraController.applyInput(routed.camera);
+    cameraController.update(editor, dt);
+    // Hand the camera to the engine so a tap on the picture can be turned
+    // into an object. The app owns the camera; the engine owns the decision
+    // about what was hit, where it can be tested.
+    editor.setViewport(cameraController.viewport(width, height));
 
     runtimeLoop.pause(editor.playing() && editor.paused());
     runtimeLoop.tick(dt, [&editor](f64 fixedStep) { editor.update(fixedStep); });
     runtimeLoop.beginRenderFrame();
-    for (const WorldEditor::GameEvent event : editor.drainEvents()) {
-      engine.server()->playSound(soundFor(event));
-      // A component bound to "goal" or "kick" in the editor fires here,
-      // without any game code knowing that component exists (stage 31).
-      editor.fireTrigger(WorldEditor::eventTriggerName(event));
-    }
+    // Drains the world's events: a component bound to "goal" or "kick" fires
+    // (with no game code knowing it exists, stage 31) and the sound cue for
+    // each event comes back from the engine's own table.
+    for (const char* cue : kimia::pumpGameplayEvents(editor)) engine.server()->playSound(cue);
     // Sounds queued by those components.
     for (const std::string& sound : editor.drainTriggeredSounds()) engine.server()->playSound(sound);
 
     // --- Build the frame ---
+    // The frame's clear colour, then the draw list from the engine's scene
+    // builder (models, materials, textures, posed characters, ghosts,
+    // markers): a file read goes through the asset manager and never through
+    // this loop.
     const kimia::EnvironmentColors colors = kimia::environmentColors(editor.world().environment);
     RenderScene scene;
-    editor.world().scene.forEach([&](kimia::EntityHandle, const EntityData& entity) {
-      const ObjectKind kind = kimia::objectKindForName(entity.name);
-      if (kind == ObjectKind::Goal && !kimia::isLegacyGoalPart(entity.name)) {
-        addGoalShape(scene, entity, cubeMesh);
-        return;
-      }
-      const MeshData* mesh = &cubeMesh;
-      if (entity.mesh == kimia::MeshKind::plane) mesh = &planeMesh;
-      if (entity.mesh == kimia::MeshKind::sphere) mesh = &sphereMesh;
-      const kimia::Image* texture = nullptr;
-      bool isPosed = false;
-      if (!entity.meshFile.empty()) {
-        // Model entity: load the OBJ/FBX once, then draw it every frame.
-        auto found = loadedMeshes.find(entity.meshFile);
-        if (found == loadedMeshes.end()) {
-          std::string loadError;
-          auto loaded = kimia::assets::loadMesh(editor.assetPath(entity.meshFile), loadError);
-          if (loaded.has_value()) {
-            found = loadedMeshes.emplace(entity.meshFile, std::move(loaded->mesh)).first;
-          }
-        }
-        if (found == loadedMeshes.end()) {
-          // No mesh: a bare rig (an animation-only FBX) still has a live
-          // stick figure, so the entity shows up and can be played.
-          kimia::MeshData stick;
-          if (editor.posedStickMesh(entity.name, stick)) {
-            mesh = &posedMeshes.insert_or_assign(entity.name, std::move(stick)).first->second;
-          } else {
-            return;  // mesh missing/unreadable: skip this entity
-          }
-        } else {
-          mesh = &found->second;
-          // A playing clip re-poses the mesh every frame; otherwise the bind
-          // pose draws, exactly as before.
-          kimia::MeshData posed;
-          if (editor.posedMesh(entity.name, posed)) {
-            mesh = &posedMeshes.insert_or_assign(entity.name, std::move(posed)).first->second;
-            isPosed = true;
-          }
-        }
-
-        // Its texture, once (stage 34). The importer has always pulled the
-        // diffuse map's path out of the .mtl or the FBX materials, but
-        // nothing ever loaded the image — so every model rendered as a
-        // flat colour however carefully it was textured.
-        auto skin = loadedTextures.find(entity.meshFile);
-        if (skin == loadedTextures.end()) {
-          kimia::Image image;
-          std::string assetError;
-          auto asset = kimia::assets::loadMeshAsset(editor.assetPath(entity.meshFile), assetError);
-          if (asset.has_value()) {
-            for (const kimia::MaterialData& material : asset->materials) {
-              if (material.texturePath.empty()) continue;
-              auto loadedImage = kimia::assets::loadImage(material.texturePath, assetError);
-              if (loadedImage.has_value()) {
-                image = std::move(*loadedImage);
-                break;
-              }
-            }
-          }
-          skin = loadedTextures.emplace(entity.meshFile, std::move(image)).first;
-        }
-        if (skin->second.width > 0 && skin->second.height > 0) texture = &skin->second;
-      }
-      // A texture the user put on this object beats the model's own, so a
-      // picture chosen from the file list actually shows up.
-      if (!entity.texture.empty()) {
-        auto chosen = loadedTextures.find(entity.texture);
-        if (chosen == loadedTextures.end()) {
-          kimia::Image image;
-          std::string imageError;
-          auto loadedImage = kimia::assets::loadImage(editor.assetPath(entity.texture), imageError);
-          if (loadedImage.has_value()) image = std::move(*loadedImage);
-          chosen = loadedTextures.emplace(entity.texture, std::move(image)).first;
-        }
-        if (chosen->second.width > 0 && chosen->second.height > 0) texture = &chosen->second;
-      }
-      // Crates follow the physics bodies while playing, and the player
-      // entity follows the character controller so the play character is
-      // actually visible where the physics puts it (including mid-jump).
-      const bool playCharacter = kind == ObjectKind::Player && editor.playing();
-      Vec3 position =
-          kind == ObjectKind::Crate
-              ? editor.cratePosition(entity.name)
-              : (playCharacter ? editor.playerPosition() : entity.transform.position);
-      // The character controller reports the body's CENTER, but a model
-      // file stands on its own feet (local y=0): sink a modeled player by
-      // the character's half height (0.5, see CharacterBody) so its feet
-      // touch the ground instead of floating.
-      if (playCharacter && !entity.meshFile.empty()) position.y -= 0.5;
-      const Vec3 scale = entity.mesh == kimia::MeshKind::sphere ? entity.transform.scale * 0.5
-                                                                : entity.transform.scale;
-      const Mat4 model =
-          Mat4::translation(position) * entity.transform.rotation.toMat4() * Mat4::scaling(scale);
-      // A model whose file brings its own materials draws one tinted
-      // piece per material; anything posed (or without materials) draws
-      // whole in the entity color, exactly as before.
-      struct DrawCall {
-        const MeshData* mesh = nullptr;
-        kimia::Vec3 color{1.0, 1.0, 1.0};
-        const kimia::Image* texture = nullptr;
-      };
-      std::vector<DrawCall> draws;
-      if (!entity.meshFile.empty() && !isPosed) {
-        const kimia::assets::MeshAsset* asset = editor.assetFor(entity.meshFile);
-        const std::vector<kimia::Vec3> tints = editor.modelTints(entity.name);
-        if (asset != nullptr && tints.size() == asset->subMeshes.size()) {
-          for (usize i = 0; i < asset->subMeshes.size(); ++i) {
-            const kimia::Image* materialTexture = texture;
-            // Each MTL/FBX material owns its own map_Kd. An explicit image
-            // painted on the entity remains the override for every slot.
-            if (entity.texture.empty()) {
-              for (const kimia::MaterialData& material : asset->materials) {
-                if (material.name != asset->subMeshes[i].materialName || material.texturePath.empty()) continue;
-                auto loadedMaterial = loadedTextures.find(material.texturePath);
-                if (loadedMaterial == loadedTextures.end()) {
-                  kimia::Image image;
-                  std::string materialError;
-                  auto loadedImage = kimia::assets::loadImage(material.texturePath, materialError);
-                  if (loadedImage.has_value()) image = std::move(*loadedImage);
-                  loadedMaterial = loadedTextures.emplace(material.texturePath, std::move(image)).first;
-                }
-                if (loadedMaterial->second.width > 0 && loadedMaterial->second.height > 0) {
-                  materialTexture = &loadedMaterial->second;
-                }
-                break;
-              }
-            }
-            draws.push_back(DrawCall{&asset->subMeshes[i], tints[i], materialTexture});
-          }
-        }
-      }
-      if (draws.empty()) draws.push_back(DrawCall{mesh, entity.color, texture});
-      for (const DrawCall& draw : draws) {
-        scene.objects.push_back({draw.mesh, model, draw.color, entity.roughness, entity.metallic,
-                                 draw.texture, entity.emissive, entity.alpha});
-      }
-      // A full-body model needs no extra block head; the bare cube does.
-      if (kind == ObjectKind::Player && entity.meshFile.empty()) {
-        // A little head so the player reads as a character.
-        scene.objects.push_back(
-            {&cubeMesh, Mat4::translation(position + Vec3{0.0, 0.65, 0.0}) *
-                            Mat4::scaling(Vec3{0.3, 0.3, 0.3}),
-             entity.color, entity.roughness});
-      }
-    });
-    // The ball follows the physics body — but only when there is one. A
-    // fresh world is an EMPTY stage (an empty Unity scene: a floor and
-    // nothing else), so no ball is drawn until the user adds a "Ball"
-    // object (or until PLAY, where the game needs one to run).
-    if (editor.world().scene.find("Ball") != 0 || editor.playing()) {
-      const f64 ballRadius = editor.world().ball.radius;
-      scene.objects.push_back(
-          {&sphereMesh, Mat4::translation(editor.ballPosition()) * Mat4::scaling(Vec3{ballRadius, ballRadius, ballRadius}),
-           editor.world().ball.color, 0.3});
-    }
-    // Ghost preview while placing, selection markers while managing, the
-    // aim chain in shot mode.
-    if (editor.placing()) addGhostShape(scene, editor, cubeMesh, sphereMesh);
-    // Particles: small camera-facing cubes. A cube rather than a sprite
-    // because the software rasteriser has no billboard path, and at this
-    // size the difference is invisible.
-    for (const kimia::Particle& particle : editor.particles().particles()) {
-      const f64 size = particle.sizeNow();
-      if (size <= 0.001) continue;
-      scene.objects.push_back({&cubeMesh,
-                               Mat4::translation(particle.position) *
-                                   Mat4::scaling(Vec3{size, size, size}),
-                               particle.colorNow(), 1.0, 0.0, nullptr});
-    }
-
-    addSquads(scene, editor, cubeMesh);
-    // Arena tracer: a thin line along the last shot, so a firefight is
-    // readable instead of invisible.
-    if (editor.arenaMode() && editor.playing()) {
-      const Vec3 from = editor.lastShotFrom();
-      const Vec3 to = editor.lastShotTo();
-      const Vec3 along = to - from;
-      const f64 length = along.length();
-      if (length > 0.01) {
-        const i32 beads = 12;
-        for (i32 i = 1; i <= beads; ++i) {
-          const f64 t = static_cast<f64>(i) / static_cast<f64>(beads + 1);
-          const Vec3 at = from + along * t;
-          scene.objects.push_back({&cubeMesh, Mat4::translation(at) * Mat4::scaling(Vec3{0.05, 0.05, 0.05}),
-                                   Vec3{1.0, 0.9, 0.4}, 0.9});
-        }
-      }
-    }
-    addAimIndicator(scene, editor, cubeMesh);
-    addCurrentCupFlag(scene, editor, cubeMesh);
-    if (editor.selectingObject() && editor.selectedEntity() != nullptr) {
-      addSelectionMarkers(scene, *editor.selectedEntity(), cubeMesh);
-    }
-
-    // Camera: above the ghost while placing/moving, above the ball in play,
-    // an overview of the field otherwise; the orbit offset persists.
-    // The engine decides where to look and how far back to stand (stage
-    // 28), so the same framing is testable and identical on every path.
-    if (editor.cameraFollowsAim()) {
-      // Chase camera: ease around behind the aim. A look drag still peeks
-      // around; the camera settles back on its own.
-      orbitCamera.yaw +=
-          angleDelta(orbitCamera.yaw, editor.aimYaw()) * std::min(1.0, kimia::kCameraFollowRate * dt);
-    }
-    orbitCamera.center = editor.cameraTarget();
-    // A broadcast camera pulls back as the play spreads out; ease toward it
-    // so the zoom never snaps.
-    const f64 wantedDistance = editor.cameraDistance(restingCameraDistance);
-    orbitCamera.distance += (wantedDistance - orbitCamera.distance) * std::min(1.0, kimia::kCameraFollowRate * dt);
-    const Vec3 eye = orbitCamera.eye();
-    scene.cameraPosition = eye;
-    scene.view = Mat4::lookAt(eye, orbitCamera.target(), Vec3{0.0, 1.0, 0.0});
-    scene.projection = Mat4::perspective(kimia::radians(60.0), static_cast<f64>(width) / static_cast<f64>(height),
-                                         0.1, 100.0);
-    scene.lightDirection = Vec3{-0.4, -0.8, -0.4};
-
-    // Hand the camera to the engine so a tap on the picture can be turned
-    // into an object. The app owns the camera; the engine owns the
-    // decision about what was hit, where it can be tested.
-    {
-      kimia::pick::Viewport viewport;
-      viewport.view = scene.view;
-      viewport.projection = scene.projection;
-      viewport.eye = eye;
-      viewport.width = width;
-      viewport.height = height;
-      editor.setViewport(viewport);
-    }
+    sceneBuilder.build(editor, scene);
+    cameraController.applyTo(scene, width, height);
 
     // The PC path renders directly to the native swap chain. The web view
     // still receives a software/GL capture below, so hybrid editing works
