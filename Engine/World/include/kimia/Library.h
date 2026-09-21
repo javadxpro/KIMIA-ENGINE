@@ -57,7 +57,9 @@ struct Library {
 
 // A name nothing in `scene` is using yet, based on `wanted`: "Barrel",
 // then "Barrel_2", "Barrel_3"... Two copies of a thing must be two
-// objects, not one object the rules cannot tell apart.
+// objects, not one object the rules cannot tell apart. Thin wrapper over
+// Scene::uniqueName (the rule and the index live with the scene); an empty
+// `wanted` becomes "Object".
 std::string uniqueName(const Scene& scene, const std::string& wanted);
 
 }  // namespace kimia

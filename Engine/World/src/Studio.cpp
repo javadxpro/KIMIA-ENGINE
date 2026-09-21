@@ -781,6 +781,43 @@ std::string handleApi(WorldEditor& editor, const std::string& path,
     return okJson();
   }
 
+  // A spoken line (phase 3): text, what wakes it, how loud, how long on
+  // screen. The Workbench is how a story is authored before any dialogue
+  // system exists, and the line goes into the .kimia file like everything else.
+  if (path == "/api/wire-line") {
+    DialogueComponent line;
+    line.line = param(params, "text");
+    line.trigger = param(params, "wiring");
+    line.volume = numberParam(params, "volume", 1.0);
+    line.holdSeconds = numberParam(params, "hold", 3.0);
+    if (line.line.empty() || line.trigger.empty()) {
+      return errorJson("a line needs text and a wiring");
+    }
+    const std::string name = param(params, "name");
+    if (flagParam(params, "clear", false)) {
+      if (!editor.clearEntityDialogue(name)) return errorJson("nothing to clear");
+      return okJson();
+    }
+    if (!editor.addEntityDialogue(name, line)) return errorJson("no such object");
+    return okJson();
+  }
+
+  // What the camera watches (phase 3).
+  if (path == "/api/watch-camera") {
+    const std::string name = param(params, "name");
+    if (flagParam(params, "clear", false)) {
+      if (!editor.clearEntityCameraTarget(name)) return errorJson("nothing to clear");
+      return okJson();
+    }
+    CameraTargetComponent target;
+    target.weight = numberParam(params, "weight", 1.0);
+    target.whilePlaying = flagParam(params, "play", true);
+    target.offset = Vec3{numberParam(params, "ox", 0.0), numberParam(params, "oy", 0.0),
+                         numberParam(params, "oz", 0.0)};
+    if (!editor.setEntityCameraTarget(name, target)) return errorJson("no such object");
+    return okJson();
+  }
+
   // Wiring a motion to a button or a game event.
   if (path == "/api/wire-motion") {
     AnimationComponent clip;

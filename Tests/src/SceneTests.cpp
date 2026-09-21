@@ -344,3 +344,128 @@ KIMIA_TEST(sceneio_rotation_partial_line_ignored) {
   KIMIA_REQUIRE(scene.find("Broken") == kimia::kNullEntity);
   KIMIA_REQUIRE(scene.find("Fine") != kimia::kNullEntity);
 }
+
+// --- Identity: the name index, duplicate names, handle generations ----------
+// Documentation/Scene.md states the contract; these tests pin it.
+
+KIMIA_TEST(scene_find_uses_the_name_index_and_stays_exact) {
+  Scene scene;
+  for (int i = 0; i < 200; ++i) scene.create("Thing_" + std::to_string(i));
+  KIMIA_REQUIRE(scene.indexedNameCount() == 200U);
+
+  // A plain lookup answers from the index: no rebuild, ever.
+  KIMIA_REQUIRE(scene.find("Thing_137") != kimia::kNullEntity);
+  KIMIA_REQUIRE(scene.find("Thing_0") == 1U);
+  KIMIA_REQUIRE(scene.nameIndexRebuilds() == 0U);
+
+  // Renaming through the index keeps it exact...
+  const kimia::EntityHandle renamed = scene.find("Thing_5");
+  KIMIA_REQUIRE(scene.rename(renamed, "Hero"));
+  KIMIA_REQUIRE(scene.nameIndexRebuilds() == 0U);
+  KIMIA_REQUIRE(scene.find("Hero") == renamed);
+  KIMIA_REQUIRE(scene.find("Thing_5") == kimia::kNullEntity);
+
+  // ...and a rename done the old way (writing the field, which a lot of the
+  // editor still does) is DETECTED, not answered wrongly.
+  scene.get(renamed)->name = "Villain";
+  KIMIA_REQUIRE(scene.find("Hero") == kimia::kNullEntity);   // the truth, not a stale hit
+  KIMIA_REQUIRE(scene.find("Villain") == renamed);           // repaired on demand
+  KIMIA_REQUIRE(scene.nameIndexRebuilds() >= 1U);
+}
+
+KIMIA_TEST(scene_duplicate_names_answer_with_the_lowest_handle) {
+  Scene scene;
+  const EntityHandle first = scene.create("Ghost");
+  const EntityHandle second = scene.create("Ghost");
+  const EntityHandle third = scene.create("Ghost");
+  KIMIA_REQUIRE(first == 1U);
+  KIMIA_REQUIRE(scene.find("Ghost") == first);
+
+  // Destroying a duplicate that is not the indexed one does not lose the name.
+  KIMIA_REQUIRE(scene.destroy(second));
+  KIMIA_REQUIRE(scene.find("Ghost") == first);
+  KIMIA_REQUIRE(scene.destroy(first));
+  KIMIA_REQUIRE(scene.find("Ghost") == third);
+
+  // A newly created duplicate never steals the answer from an older one.
+  const EntityHandle fourth = scene.create("Ghost");
+  KIMIA_REQUIRE(scene.find("Ghost") == third);
+  KIMIA_REQUIRE(fourth == third + 1U);
+
+  // Renaming one duplicate away leaves the other reachable under the name.
+  const EntityHandle other = scene.create("Sprite");
+  KIMIA_REQUIRE(scene.rename(other, "Ghost"));
+  KIMIA_REQUIRE(scene.find("Ghost") == third);
+}
+
+KIMIA_TEST(scene_unnamed_entities_are_not_findable) {
+  Scene scene;
+  const EntityHandle unnamed = scene.create("");
+  KIMIA_REQUIRE(scene.indexedNameCount() == 0U);
+  KIMIA_REQUIRE(scene.find("") == kimia::kNullEntity);
+  KIMIA_REQUIRE(scene.alive(unnamed));
+  scene.rename(unnamed, "NowNamed");
+  KIMIA_REQUIRE(scene.indexedNameCount() == 1U);
+  KIMIA_REQUIRE(scene.find("NowNamed") == unnamed);
+}
+
+KIMIA_TEST(scene_unique_name_hands_out_the_next_free_spelling) {
+  Scene scene;
+  KIMIA_REQUIRE(scene.uniqueName("Barrel") == "Barrel");
+  scene.create("Barrel");
+  KIMIA_REQUIRE(scene.uniqueName("Barrel") == "Barrel_2");
+  scene.create("Barrel_2");
+  scene.create("Barrel_3");
+  scene.create("Barrel_5");  // a gap must not be reused
+  KIMIA_REQUIRE(scene.uniqueName("Barrel") == "Barrel_4");
+  KIMIA_REQUIRE(scene.uniqueName("") == "Entity");
+}
+
+KIMIA_TEST(scene_handle_generation_is_the_id_itself) {
+  Scene scene;
+  const EntityHandle first = scene.create("A");
+  KIMIA_REQUIRE(scene.destroy(first));
+  // A hundred entities later the old id still addresses nothing: no
+  // generation counter is needed because an id is issued once.
+  for (int i = 0; i < 100; ++i) scene.create("Filler" + std::to_string(i));
+  KIMIA_REQUIRE(scene.find("A") == kimia::kNullEntity);
+  KIMIA_REQUIRE(scene.get(first) == nullptr);
+  KIMIA_REQUIRE(!scene.alive(first));
+
+  // clear() empties the scene but does not make old ids reusable either.
+  scene.clear();
+  KIMIA_REQUIRE(scene.count() == 0U);
+  KIMIA_REQUIRE(scene.indexedNameCount() == 0U);
+  const EntityHandle after = scene.create("B");
+  KIMIA_REQUIRE(after > first);
+  KIMIA_REQUIRE(scene.get(first) == nullptr);
+}
+
+KIMIA_TEST(scene_restore_keeps_file_ids_and_reserves_the_counter) {
+  Scene scene;
+  EntityData wall;
+  wall.name = "Wall";
+  KIMIA_REQUIRE(scene.restore(7U, wall));
+  KIMIA_REQUIRE(scene.find("Wall") == 7U);
+  KIMIA_REQUIRE(!scene.restore(7U, wall));          // taken
+  KIMIA_REQUIRE(!scene.restore(kimia::kNullEntity, wall));  // null is not an entity
+  // The next created entity comes after the restored id, and the gap stays a
+  // gap: ids are handed out, never recycled.
+  const EntityHandle next = scene.create("Post");
+  KIMIA_REQUIRE(next == 8U);
+  KIMIA_REQUIRE(scene.count() == 2U);
+}
+
+KIMIA_TEST(scene_clone_keeps_handles_and_names) {
+  Scene scene;
+  scene.create("A");
+  const EntityHandle removed = scene.create("B");
+  scene.create("C");
+  scene.destroy(removed);  // handle 2 is now a hole: the scene is not canonical
+  Scene copy = scene.clone();
+  KIMIA_REQUIRE(copy.count() == 2U);
+  KIMIA_REQUIRE(copy.find("A") == 1U);
+  KIMIA_REQUIRE(copy.find("C") == 3U);
+  KIMIA_REQUIRE(copy.find("B") == kimia::kNullEntity);
+  KIMIA_REQUIRE(copy.get(2U) == nullptr);
+}

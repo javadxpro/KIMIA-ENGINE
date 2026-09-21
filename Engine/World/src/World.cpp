@@ -654,6 +654,10 @@ void WorldEditor::enterPlay() {
 }
 
 void WorldEditor::update(f64 hostSeconds) {
+  // Lines count down on real time, before the pause check: a caption is HUD
+  // text with a lifetime, not simulation state, and a paused game that hides
+  // the line it just showed would be a bug of its own.
+  updateDialogue(hostSeconds);
   if (paused_ && playing()) return;  // toolbar Pause: the sim freezes, the menus don't
   const int screen = static_cast<int>(screen_);
   // The ghost and a live-moved object stay inside the field (same margin
@@ -1848,6 +1852,39 @@ bool WorldEditor::addEntitySound(const std::string& name, const SoundComponent& 
   return true;
 }
 
+bool WorldEditor::addEntityDialogue(const std::string& name, const DialogueComponent& line) {
+  EntityData* target = world_.scene.get(world_.scene.find(name));
+  if (target == nullptr || line.line.empty()) return false;
+  target->dialogue.push_back(line);
+  return true;
+}
+
+std::vector<DialogueComponent> WorldEditor::entityDialogue(const std::string& name) const {
+  const EntityData* target = world_.scene.get(world_.scene.find(name));
+  return target != nullptr ? target->dialogue : std::vector<DialogueComponent>();
+}
+
+bool WorldEditor::clearEntityDialogue(const std::string& name) {
+  EntityData* target = world_.scene.get(world_.scene.find(name));
+  if (target == nullptr || target->dialogue.empty()) return false;
+  target->dialogue.clear();
+  return true;
+}
+
+bool WorldEditor::setEntityCameraTarget(const std::string& name, const CameraTargetComponent& targetValue) {
+  EntityData* target = world_.scene.get(world_.scene.find(name));
+  if (target == nullptr) return false;
+  target->cameraTarget = targetValue;
+  return true;
+}
+
+bool WorldEditor::clearEntityCameraTarget(const std::string& name) {
+  EntityData* target = world_.scene.get(world_.scene.find(name));
+  if (target == nullptr || !target->cameraTarget.has_value()) return false;
+  target->cameraTarget.reset();
+  return true;
+}
+
 bool WorldEditor::setEntityBone(const std::string& name, const RigBone& bone) {
   EntityData* target = world_.scene.get(world_.scene.find(name));
   if (target == nullptr || bone.name.empty()) return false;
@@ -2091,6 +2128,9 @@ u32 WorldEditor::fireTrigger(const std::string& trigger) {
       ++fired;
     }
   });
+  // Dialogue listens to the same names: a key press or a game event that
+  // plays a clip and a sound plays the line too, with no extra wiring.
+  fired += static_cast<u32>(fireDialogueTrigger(trigger));
   return fired;
 }
 
@@ -2961,6 +3001,18 @@ void WorldEditor::updateRules(f64 seconds, const Vec3& previousBall) {
 
 Vec3 WorldEditor::cameraTarget() const {
   if (placing() || movingObject()) return Vec3{ghost_.x, 0.2, ghost_.z};
+  // A world may say what the camera should watch (CameraTargetComponent): the
+  // highest weight wins, ties go to the lowest handle, the same rule the name
+  // index follows. While the person is working on an object (selection
+  // screens) their own hands win — an authored target must not fight the
+  // editor.
+  if (!selectingObject()) {
+    const EntityHandle wanted = cameraTargetEntity();
+    if (aliveCameraTarget(wanted)) {
+      const EntityData* target = world_.scene.get(wanted);
+      return target->transform.position + target->cameraTarget->offset;
+    }
+  }
   if (!playing()) {
     const EntityData* selected = selectedEntity();
     if (selectingObject() && selected != nullptr) return selected->transform.position;
@@ -2972,6 +3024,102 @@ Vec3 WorldEditor::cameraTarget() const {
   // toward the ball because that is what the viewer is actually watching.
   return Vec3{ball.x * kCameraBallBias + playerPos_.x * (1.0 - kCameraBallBias), ball.y,
               ball.z * kCameraBallBias + playerPos_.z * (1.0 - kCameraBallBias)};
+}
+
+EntityHandle WorldEditor::cameraTargetEntity() const {
+  EntityHandle best = kNullEntity;
+  f64 bestWeight = 0.0;
+  world_.scene.forEach([&](EntityHandle handle, const EntityData& entity) {
+    if (!entity.cameraTarget.has_value()) return;
+    // An edit-only target does not steer the camera during play.
+    if (playing() && !entity.cameraTarget->whilePlaying) return;
+    const f64 weight = entity.cameraTarget->weight;
+    if (weight <= bestWeight) return;  // ties keep the lower handle
+    best = handle;
+    bestWeight = weight;
+  });
+  return best;
+}
+
+bool WorldEditor::aliveCameraTarget(EntityHandle handle) const {
+  if (handle == kNullEntity) return false;
+  const EntityData* entity = world_.scene.get(handle);
+  return entity != nullptr && entity->cameraTarget.has_value();
+}
+
+// --- Dialogue (phase 3) ------------------------------------------------------
+//
+// A line is DATA on an entity, woken by the same trigger names animations and
+// sounds use. There is no second dialogue runtime to keep in sync: this is what
+// the HUD reads, what the editor lists and what the file stores, and phase 8's
+// story is authored on top of it.
+
+void WorldEditor::showDialogue(const std::string& speaker, DialogueComponent line) {
+  if (line.line.empty() || line.holdSeconds <= 0.0) return;
+  // One line per speaker: a second line from the same person replaces the
+  // first (people do not talk over themselves), while another speaker's line
+  // is simply also on screen.
+  for (ActiveDialogue& active : dialogue_) {
+    if (active.speaker != speaker) continue;
+    active.component = std::move(line);
+    active.remaining = active.component.holdSeconds;
+    return;
+  }
+  ActiveDialogue active;
+  active.speaker = speaker;
+  active.component = std::move(line);
+  active.remaining = active.component.holdSeconds;
+  dialogue_.push_back(std::move(active));
+}
+
+void WorldEditor::updateDialogue(f64 dt) {
+  if (dialogue_.empty() || dt <= 0.0) return;
+  for (usize i = dialogue_.size(); i > 0U; --i) {
+    dialogue_[i - 1U].remaining -= dt;
+    if (dialogue_[i - 1U].remaining <= 0.0) {
+      dialogue_.erase(dialogue_.begin() + static_cast<std::ptrdiff_t>(i - 1U));
+    }
+  }
+}
+
+void WorldEditor::clearDialogue() { dialogue_.clear(); }
+
+std::vector<std::string> WorldEditor::dialogueLines() const {
+  std::vector<std::string> lines;
+  lines.reserve(dialogue_.size());
+  for (const ActiveDialogue& active : dialogue_) {
+    lines.push_back(active.speaker.empty() ? active.component.line
+                                           : active.speaker + ": " + active.component.line);
+  }
+  return lines;
+}
+
+usize WorldEditor::fireDialogue(const std::string& entityName, const std::string& trigger) {
+  EntityData* entity = world_.scene.get(world_.scene.find(entityName));
+  if (entity == nullptr || entity->dialogue.empty()) return 0U;
+  usize started = 0U;
+  const std::string speaker = entity->name;
+  for (const DialogueComponent& line : entity->dialogue) {
+    if (line.trigger != trigger) continue;
+    showDialogue(speaker, line);
+    ++started;
+  }
+  return started;
+}
+
+usize WorldEditor::fireDialogueTrigger(const std::string& trigger) {
+  if (trigger.empty()) return 0U;
+  // Collected first, then shown. Nothing here modifies the scene today, but a
+  // container must not be mutated while it is walked — and the next person to
+  // touch this should not have to re-derive whether it is safe.
+  std::vector<std::pair<std::string, DialogueComponent>> firing;
+  world_.scene.forEach([&firing, &trigger](EntityHandle, const EntityData& entity) {
+    for (const DialogueComponent& line : entity.dialogue) {
+      if (line.trigger == trigger) firing.emplace_back(entity.name, line);
+    }
+  });
+  for (const auto& entry : firing) showDialogue(entry.first, entry.second);
+  return firing.size();
 }
 
 f64 WorldEditor::cameraDistance(f64 restingDistance) const {
@@ -3660,6 +3808,10 @@ f64 WorldEditor::kickSpeed() const {
 
 std::vector<std::string> WorldEditor::hudLines() const {
   std::vector<std::string> lines;
+  // A spoken line is on screen whenever it is live, playing or not: a
+  // tutorial line while the editor builds a scene is exactly as useful as one
+  // during a match.
+  for (const std::string& line : dialogueLines()) lines.push_back(line);
   if (!playing()) return lines;
   // Whatever the user's rules asked to say goes FIRST, on every kind of
   // game. Putting it inside one branch meant a win message was invisible

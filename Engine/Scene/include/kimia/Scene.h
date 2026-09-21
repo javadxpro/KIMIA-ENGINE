@@ -9,6 +9,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace kimia {
@@ -79,6 +80,37 @@ struct RigBone {
   f64 swing = 0.0;
 };
 
+// Dialogue component: one spoken line and when it plays.
+//
+// Phase 8 needs a data-driven story ("at least ten lines, not hard-coded"),
+// and this is the piece that makes a line DATA: it is authored in the editor,
+// saved in the .kimia file with everything else, reached by the same trigger
+// names animations and sounds use, and therefore testable and replayable
+// without a dialogue system existing yet.
+//
+// The speaker is deliberately not a field: the component belongs to the
+// entity that speaks, so a line can never be attributed to the wrong actor by
+// a typo — and an entity that is deleted takes its dialogue with it.
+struct DialogueComponent {
+  std::string line;     // the text, in whatever language the game is in
+  std::string trigger;  // key name or built-in event, like AnimationComponent
+  f64 volume = 1.0;     // how loud, when the line is voiced
+  f64 holdSeconds = 3.0;  // how long a caption stays on screen
+};
+
+// Camera target component: this entity is what the camera should look at.
+//
+// The editor has always decided the camera's subject by rules inside
+// WorldEditor::cameraTarget() (the ball while playing, the selected object
+// while editing). This component lets a WORLD overrule that: the entity
+// carrying it wins, with a weight, so an author can say "watch the keeper" or
+// "this is the hero of this scene" and mean it.
+struct CameraTargetComponent {
+  f64 weight = 1.0;    // higher wins when several entities carry it
+  bool whilePlaying = true;  // false = only while editing
+  Vec3 offset{0.0, 0.0, 0.0};  // look slightly above/beside the entity
+};
+
 // Sound component: a registered sound name, played on the same kind of
 // trigger as an animation.
 struct SoundComponent {
@@ -115,8 +147,10 @@ struct EntityData {
   std::vector<std::string> tags;
   // Optional components. Absent means "this entity does not do that".
   std::optional<BodyComponent> body;
+  std::optional<CameraTargetComponent> cameraTarget;
   std::vector<AnimationComponent> animations;
   std::vector<SoundComponent> sounds;
+  std::vector<DialogueComponent> dialogue;
   // A character's own bones (stage 35). Empty means "use the engine's
   // default figure", so nothing that worked before needs changing.
   std::vector<RigBone> rig;
@@ -146,9 +180,25 @@ struct DemoShot {
   f64 power = 0.0;
 };
 
-// Entity container. Handles are 1-based and never reused; destroyed handles
-// become null immediately (get/alive return null/false). Iteration is in
-// handle order (deterministic, useful for stable serialization).
+// Entity container.
+//
+// Identity (see Documentation/Scene.md for the reasoning):
+//
+//   * Handles are 1-based, zero is null, and an id is issued ONCE — a
+//     destroyed handle is never handed out again, so a stale handle can never
+//     address a newer entity. That is why there is no separate generation
+//     counter: the id itself is the generation.
+//   * Names are the working key of the editor and the games. Duplicates are
+//     allowed (old files and tools must keep working) and find() always
+//     answers with the LOWEST live handle for a name, which makes the answer
+//     independent of insert history.
+//   * An empty name is not indexed: unnamed means unfindable.
+//   * Iteration is in handle order (deterministic, the base of stable
+//     serialization).
+//
+// Lookup goes through a name index, because find() is called from loops
+// (physics rebuild, sound lookup, object naming) and used to walk the whole
+// scene every time.
 class Scene {
 public:
   Scene() = default;
@@ -160,27 +210,56 @@ public:
   // Copying a scene is deliberately not silent: scenes are large and an
   // accidental copy would be an expensive surprise. Switching stages
   // genuinely needs one, so it asks for it by name.
+  //
+  // A clone keeps the handles of the original: once ids are written to files
+  // (scene v2), an entity's id is part of what it is, and a stage switch must
+  // not renumber it.
   Scene clone() const;
 
   EntityHandle create(const std::string& name = "Entity");
   EntityHandle create(const EntityData& data);
+  // Puts an entity at a specific id, for a loader restoring a file's own ids.
+  // False when the id is null or already taken. The next created entity gets
+  // an id above the highest restored one.
+  bool restore(EntityHandle handle, const EntityData& data);
   bool destroy(EntityHandle handle);
+  // Renames through the index. The blessed path — writing entity->name
+  // directly still works (find() notices and repairs the index), but this one
+  // leaves the index exact without a rebuild.
+  bool rename(EntityHandle handle, const std::string& name);
 
   EntityData* get(EntityHandle handle);
   const EntityData* get(EntityHandle handle) const;
   bool alive(EntityHandle handle) const;
   usize count() const { return entities_.size(); }
 
-  // First entity with this name, or kNullEntity (iteration order stable).
+  // Lowest live handle with this name, or kNullEntity.
   EntityHandle find(const std::string& name) const;
+  // A name nobody is using: "Block" when it is free, else "Block_2",
+  // "Block_3", … The editor's spelling of "make me another one".
+  std::string uniqueName(const std::string& wanted) const;
 
   void forEach(const std::function<void(EntityHandle, const EntityData&)>& callback) const;
   void clear();
 
+  // How many times the name index had to be rebuilt because an entity was
+  // renamed behind its back (see find()). Zero in a well-behaved frame loop;
+  // a rising number is a caller that should use rename().
+  usize nameIndexRebuilds() const { return nameIndexRebuilds_; }
+  // Live names in the index; for tests and diagnostics.
+  usize indexedNameCount() const { return names_.size(); }
+
   std::optional<DemoShot> demoShot;
 
 private:
+  void indexName(const EntityData& entity, EntityHandle handle) const;
+  void reindex() const;
+
   std::map<EntityHandle, EntityData> entities_;
+  // Mutable because find() is const and repairs the index (a cache, not
+  // state: it can always be rebuilt from entities_).
+  mutable std::unordered_map<std::string, EntityHandle> names_;
+  mutable usize nameIndexRebuilds_ = 0U;
   u32 nextHandle_ = 1U;
 };
 

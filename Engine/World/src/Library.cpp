@@ -48,14 +48,10 @@ bool Library::forget(const std::string& name) {
 }
 
 std::string uniqueName(const Scene& scene, const std::string& wanted) {
-  const std::string base = wanted.empty() ? std::string("Object") : wanted;
-  if (scene.find(base) == kNullEntity) return base;
-  u32 index = 2U;
-  for (;;) {
-    const std::string candidate = base + "_" + std::to_string(index);
-    if (scene.find(candidate) == kNullEntity) return candidate;
-    ++index;
-  }
+  // The rule lives in Scene (it owns the name index and the "lowest handle
+  // wins" answer); this keeps the long-standing spelling of the name for
+  // callers that already say uniqueName(scene, x).
+  return scene.uniqueName(wanted.empty() ? std::string("Object") : wanted);
 }
 
 std::string Library::stamp(const std::string& blueprintName, Scene& into, const Vec3& at) const {

@@ -86,7 +86,15 @@ bool WorldIO::save(const WorldData& world, std::string& out) {
   std::string sceneText;
   if (!SceneIO::save(world.scene, sceneText)) return false;
   std::ostringstream stream;
-  stream << "# KIMIA scene v1\n";
+  // The file declares the version of what it CONTAINS: the scene's own header
+  // decides. (A world used to write v1 here and drop the scene's header, so a
+  // world whose scene carried entity ids claimed to be v1 and lost them in any
+  // reader that trusted the header.) A scene without ids still says v1, so
+  // every world on disk today stays byte-identical.
+  const usize sceneHeaderEnd = sceneText.find('\n');
+  stream << (sceneHeaderEnd == std::string::npos ? std::string("# KIMIA scene v1")
+                                                 : sceneText.substr(0U, sceneHeaderEnd))
+         << '\n';
   stream << "# world name " << escapeLineText(world.name) << '\n';
   for (const std::string& line : ProfileIO::lines(world.profile)) stream << kProfilePrefix << line << '\n';
   stream << "# player speed " << formatFixed6(world.player.speed) << " color " << formatFixed6(world.player.color.x)
@@ -205,6 +213,13 @@ bool WorldIO::load(const std::string& text, WorldData& out, std::string& error) 
     if (!line.empty() && line.back() == '\r') line.pop_back();
     if (line.rfind("# world name ", 0) == 0) {
       out.name = unescapeLineText(line.substr(13U));
+    } else if (line.rfind("# name ", 0) == 0) {
+      // The spelling the two oldest worlds in the tree use
+      // (Worlds/anim_demo.kimia, Worlds/kimia_poster.kimia). Nothing ever
+      // read it, so those files quietly loaded as "MyWorld"; a word this
+      // specific in a world file can only mean the world's name, so it is
+      // read now (and a file saved back uses the current spelling).
+      out.name = unescapeLineText(line.substr(7U));
     } else if (line.rfind(kProfilePrefix, 0) == 0) {
       const std::string body = line.substr(10U);
       if (ProfileIO::parseLine(body, out.profile) && body.rfind("field ", 0) == 0) hasField = true;

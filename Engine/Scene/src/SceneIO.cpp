@@ -1,7 +1,10 @@
 #include <kimia/SceneIO.h>
 
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <vector>
 
@@ -9,7 +12,41 @@ namespace kimia {
 
 namespace {
 
-constexpr const char* kHeader = "# KIMIA scene v1";
+// The versions this file format has had. What a build WRITES is decided per
+// scene (see needsIds below); what it can READ is the whole list.
+constexpr const char* kHeaderV1 = "# KIMIA scene v1";
+constexpr const char* kHeaderV2 = "# KIMIA scene v2";
+constexpr const char* kHeaderPrefix = "# KIMIA scene v";
+
+const char* headerFor(int version) { return version >= 2 ? kHeaderV2 : kHeaderV1; }
+
+// Reads the version out of a header line, or 0 when the line is not one.
+// The text comes from the file, so anything at all can be in it.
+int versionOfHeader(const std::string& line) {
+  const std::string prefix = kHeaderPrefix;
+  if (line.compare(0U, prefix.size(), prefix) != 0) return 0;
+  const std::string digits = line.substr(prefix.size());
+  if (digits.empty()) return 0;
+  int version = 0;
+  for (const char c : digits) {
+    if (c < '0' || c > '9') return 0;
+    version = version * 10 + (c - '0');
+    if (version > 1000) return 0;  // a corrupt header, not a version
+  }
+  return version;
+}
+
+// True when the scene's handles are not 1..N, which is the only thing v2 adds.
+// forEach visits in ascending handle order, so one pass answers it.
+bool needsIds(const Scene& scene) {
+  u32 expected = 1U;
+  bool needed = false;
+  scene.forEach([&expected, &needed](EntityHandle handle, const EntityData&) {
+    if (handle != expected) needed = true;
+    expected = handle + 1U;
+  });
+  return needed;
+}
 
 std::string trimmed(const std::string& line) {
   usize begin = 0;
@@ -80,7 +117,31 @@ bool parseF64(const std::string& token, f64& out) {
   try {
     usize consumed = 0;
     out = std::stod(token, &consumed);
-    return consumed == token.size();
+    if (consumed != token.size()) return false;
+  } catch (...) {
+    return false;
+  }
+  // std::stod happily reads "nan" and "inf". A NaN position poisons every
+  // physics step that touches it and shows up as an object that vanished, so
+  // the loader refuses the number instead (the line is dropped with a
+  // warning — see the entity loop).
+  return std::isfinite(out);
+}
+
+// Reads a positive whole handle. 0 is not an entity, and neither is a
+// negative number or a fractional one.
+bool parseHandle(const std::string& token, EntityHandle& out) {
+  if (token.empty()) return false;
+  for (const char c : token) {
+    if (c < '0' || c > '9') return false;
+  }
+  try {
+    const unsigned long value = std::stoul(token);
+    if (value == 0UL || value > static_cast<unsigned long>(std::numeric_limits<EntityHandle>::max())) {
+      return false;
+    }
+    out = static_cast<EntityHandle>(value);
+    return true;
   } catch (...) {
     return false;
   }
@@ -137,11 +198,18 @@ std::optional<MeshKind> meshKind(const std::string& token) {
 }  // namespace
 
 bool SceneIO::save(const Scene& scene, std::string& out) {
+  // The oldest version that can express this scene: v1 unless the handles
+  // need recording. Every scene saved before ids existed, and every scene
+  // that has never had an object deleted, still writes exactly the same bytes
+  // it always did.
+  const bool withIds = needsIds(scene);
   std::ostringstream stream;
-  stream << kHeader << '\n';
-  scene.forEach([&stream](EntityHandle, const EntityData& entity) {
+  stream << headerFor(withIds ? kVersion : 1) << '\n';
+  scene.forEach([&stream, withIds](EntityHandle handle, const EntityData& entity) {
     const Transform& t = entity.transform;
-    stream << "e " << quoteName(entity.name) << " mesh " << meshName(entity.mesh);
+    stream << "e " << quoteName(entity.name);
+    if (withIds) stream << " id " << handle;
+    stream << " mesh " << meshName(entity.mesh);
     if (!entity.meshFile.empty()) stream << " meshfile " << quoteName(entity.meshFile);
     if (!entity.texture.empty()) stream << " texture " << quoteName(entity.texture);
     stream << " pos " << format(t.position.x) << ' ' << format(t.position.y) << ' ' << format(t.position.z);
@@ -184,6 +252,19 @@ bool SceneIO::save(const Scene& scene, std::string& out) {
       stream << " sound " << quoteName(sound.sound) << ' ' << quoteName(sound.trigger) << ' '
              << format(sound.volume);
     }
+    // Dialogue (phase 3): one line per component, all four fields or none.
+    for (const DialogueComponent& line : entity.dialogue) {
+      stream << " say " << quoteName(line.line) << ' ' << quoteName(line.trigger) << ' '
+             << format(line.volume) << ' ' << format(line.holdSeconds);
+    }
+    // Camera target (phase 3): what the camera should look at, if the world
+    // says so. Written only when present, so no old file grows a line.
+    if (entity.cameraTarget.has_value()) {
+      const CameraTargetComponent& target = *entity.cameraTarget;
+      stream << " camtarget " << format(target.weight) << ' ' << (target.whilePlaying ? "play" : "edit")
+             << ' ' << format(target.offset.x) << ' ' << format(target.offset.y) << ' '
+             << format(target.offset.z);
+    }
     stream << '\n';
   });
   if (scene.demoShot.has_value()) {
@@ -203,14 +284,35 @@ bool SceneIO::saveToFile(const Scene& scene, const std::string& path) {
 }
 
 bool SceneIO::load(const std::string& text, Scene& out, std::string& error) {
-  static_cast<void>(error);  // tolerant loader: text is never a hard error
+  LoadReport ignored;
+  return load(text, out, error, ignored);
+}
+
+bool SceneIO::load(const std::string& text, Scene& out, std::string& error, LoadReport& report) {
+  report = LoadReport{};
   Scene result;
   std::istringstream stream(text);
   std::string rawLine;
+  usize lineNumber = 0U;
+  std::vector<std::string> ignoredKeywords;
   while (std::getline(stream, rawLine)) {
+    ++lineNumber;
     const std::string line = trimmed(rawLine);
     if (line.empty()) continue;
     if (line[0] == '#') {
+      // The version line. A world file can carry more than one (WorldIO
+      // writes its own header and embeds the scene text), so the highest
+      // one seen wins: the file as a whole is as new as its newest part.
+      const int declared = versionOfHeader(line);
+      if (declared != 0) {
+        report.version = std::max(report.version, declared);
+        if (declared > kVersion) {
+          error = "scene file version " + std::to_string(declared) +
+                  " is newer than this engine understands (" + std::to_string(kVersion) + ")";
+          return false;
+        }
+        continue;
+      }
       // Comments are ignored except "# demo <aim> <power>".
       const std::string body = trimmed(line.substr(1));
       const std::vector<std::string> tokens = tokenizeLine(body);
@@ -228,14 +330,26 @@ bool SceneIO::load(const std::string& text, Scene& out, std::string& error) {
 
     EntityData entity;
     entity.name = tokens[1];
+    EntityHandle wantedId = kNullEntity;  // v2: the id the file asks for
     bool complete = true;
+    std::string dropped;  // why the line was thrown away, for the report
     usize i = 2U;
     while (i < tokens.size() && complete) {
       const std::string& keyword = tokens[i];
+      if (keyword == "id") {
+        if (i + 1U >= tokens.size() || !parseHandle(tokens[i + 1U], wantedId)) {
+          complete = false;
+          dropped = "id is not a positive whole number";
+          break;
+        }
+        i += 2U;
+        continue;
+      }
       if (keyword == "mesh" && i + 1U < tokens.size()) {
         const auto kind = meshKind(tokens[i + 1U]);
         if (!kind.has_value()) {
           complete = false;  // unknown mesh kind: ignore the entity line
+          dropped = "unknown mesh kind '" + tokens[i + 1U] + "'";
           break;
         }
         entity.mesh = *kind;
@@ -345,6 +459,48 @@ bool SceneIO::load(const std::string& text, Scene& out, std::string& error) {
         i += 4U;
         continue;
       }
+      if (keyword == "say") {
+        // say <line> <trigger> <volume> <hold> — a dialogue line.
+        if (i + 4U >= tokens.size()) {
+          complete = false;
+          break;
+        }
+        DialogueComponent spoken;
+        f64 volume = 1.0;
+        f64 hold = 3.0;
+        if (!parseF64(tokens[i + 3U], volume) || !parseF64(tokens[i + 4U], hold)) {
+          complete = false;
+          break;
+        }
+        spoken.line = tokens[i + 1U];
+        spoken.trigger = tokens[i + 2U];
+        spoken.volume = volume;
+        spoken.holdSeconds = hold;
+        entity.dialogue.push_back(spoken);
+        i += 5U;
+        continue;
+      }
+      if (keyword == "camtarget") {
+        // camtarget <weight> play|edit <offset x y z>
+        if (i + 5U >= tokens.size()) {
+          complete = false;
+          break;
+        }
+        CameraTargetComponent target;
+        f64 weight = 1.0;
+        f64 ox = 0.0, oy = 0.0, oz = 0.0;
+        if (!parseF64(tokens[i + 1U], weight) || !parseF64(tokens[i + 3U], ox) ||
+            !parseF64(tokens[i + 4U], oy) || !parseF64(tokens[i + 5U], oz)) {
+          complete = false;
+          break;
+        }
+        target.weight = weight;
+        target.whilePlaying = tokens[i + 2U] == "play";
+        target.offset = Vec3{ox, oy, oz};
+        entity.cameraTarget = target;
+        i += 6U;
+        continue;
+      }
       if (keyword == "pos") {
         Vec3 value;
         if (!parseVec3(tokens, i, value)) {
@@ -426,16 +582,62 @@ bool SceneIO::load(const std::string& text, Scene& out, std::string& error) {
         i += 2U;
         continue;
       }
-      ++i;  // unknown keyword: skip it (tolerant)
+      // Unknown keyword: skip it (tolerant), but remember it. A file written
+      // by a newer engine lands here, and "which words did I not understand"
+      // is the first question anybody asks about a scene that came out
+      // smaller than it went in.
+      //
+      // Numbers are not remembered: an unknown keyword is followed by its
+      // own values ("glow 3" would otherwise report "3" as a keyword), and
+      // the word is what a person can act on.
+      f64 unused = 0.0;
+      if (!parseF64(tokens[i], unused)) ignoredKeywords.push_back(tokens[i]);
+      ++i;
     }
-    if (!complete) continue;  // partial line: ignored
+    if (!complete) {
+      if (dropped.empty() && i < tokens.size()) dropped = "cannot read the value of '" + tokens[i] + "'";
+      // Partial line: ignored, exactly as before — but now with a reason, so
+      // a broken file can say which line and which entity it lost.
+      report.warnings.push_back("line " + std::to_string(lineNumber) + ": entity \"" + entity.name +
+                                "\" ignored (" + (dropped.empty() ? std::string("incomplete line") : dropped) +
+                                ")");
+      continue;
+    }
+    // The file's own id when there is one (v2): a scene whose handles are not
+    // 1..N must come back the way it left, or every later save renumbers it
+    // and any reference to an entity becomes a reference to another entity.
+    if (wantedId != kNullEntity) {
+      if (result.restore(wantedId, entity)) {
+        ++report.restoredIds;
+      } else {
+        report.warnings.push_back("line " + std::to_string(lineNumber) + ": entity \"" + entity.name +
+                                  "\" asked for id " + std::to_string(wantedId) +
+                                  ", which is already taken; it was given the next free one");
+        result.create(entity);
+        ++report.assignedIds;
+      }
+      continue;
+    }
     result.create(entity);
+    ++report.assignedIds;
   }
+  std::sort(ignoredKeywords.begin(), ignoredKeywords.end());
+  ignoredKeywords.erase(std::unique(ignoredKeywords.begin(), ignoredKeywords.end()), ignoredKeywords.end());
+  report.ignoredKeywords = std::move(ignoredKeywords);
+  // The file was an older version and the result is the current model. There
+  // is no rewrite step: v2 is a superset of v1, so this is what "migration"
+  // means here.
+  report.migrated = report.version < kVersion;
   out = std::move(result);
   return true;
 }
 
 bool SceneIO::loadFromFile(const std::string& path, Scene& out, std::string& error) {
+  LoadReport ignored;
+  return loadFromFile(path, out, error, ignored);
+}
+
+bool SceneIO::loadFromFile(const std::string& path, Scene& out, std::string& error, LoadReport& report) {
   std::ifstream file(path, std::ios::binary);
   if (!file) {
     error = "cannot open scene file: " + path;
@@ -443,7 +645,7 @@ bool SceneIO::loadFromFile(const std::string& path, Scene& out, std::string& err
   }
   std::ostringstream buffer;
   buffer << file.rdbuf();
-  return load(buffer.str(), out, error);
+  return load(buffer.str(), out, error, report);
 }
 
 }  // namespace kimia

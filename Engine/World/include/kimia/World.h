@@ -611,6 +611,38 @@ public:
 
   std::string statsLine() const;
 
+  // --- What the camera should watch (phase 3) ---
+  // The entity carrying a CameraTargetComponent with the highest weight, or
+  // kNullEntity when no entity asks for the camera. While the person is
+  // working on an object (selection screens) the editor ignores this: their
+  // choice of object wins.
+  EntityHandle cameraTargetEntity() const;
+  bool aliveCameraTarget(EntityHandle handle) const;
+
+  // --- Dialogue (phase 3) ---
+  // A line is data on an entity (DialogueComponent), woken by the same trigger
+  // names animations and sounds use, shown by hudLines() and saved in the
+  // .kimia file. Several speakers can be on screen at once; a second line from
+  // the same speaker replaces their first.
+  struct ActiveDialogue {
+    std::string speaker;         // the entity that said it ("" = narrator)
+    DialogueComponent component;
+    f64 remaining = 0.0;         // seconds left on screen
+  };
+  void showDialogue(const std::string& speaker, DialogueComponent line);
+  // Counts a live line down; call it once with the host frame time.
+  void updateDialogue(f64 seconds);
+  void clearDialogue();
+  // "speaker: line" per live line, in the order they started. Empty when
+  // nobody is talking, which is the normal case.
+  std::vector<std::string> dialogueLines() const;
+  // Starts every line on `entityName` whose trigger matches. Returns how many
+  // started; a name that does not exist or a line with no trigger starts none.
+  usize fireDialogue(const std::string& entityName, const std::string& trigger);
+  // Starts every line in the world listening to `trigger`. fireTrigger() calls
+  // this, so a key or a game event that plays a clip and a sound also speaks.
+  usize fireDialogueTrigger(const std::string& trigger);
+
   // --- On-frame HUD (drawn by the app with the bitmap font) ---
   // Short ASCII lines for the top-left of the frame while playing: what the
   // player needs at a glance without reading the stats line. Empty outside
@@ -784,6 +816,17 @@ public:
   bool clearEntityBody(const std::string& name);
   bool addEntityAnimation(const std::string& name, const AnimationComponent& clip);
   bool addEntitySound(const std::string& name, const SoundComponent& sound);
+  // Dialogue (phase 3): attaches one line to an entity. The same trigger names
+  // animations and sounds use, so a key or a game event plays all three.
+  // Empty text changes nothing (a line with no words is not a line).
+  bool addEntityDialogue(const std::string& name, const DialogueComponent& line);
+  // Every line on the entity, newest last; a name that does not exist gives
+  // an empty list rather than a guess.
+  std::vector<DialogueComponent> entityDialogue(const std::string& name) const;
+  bool clearEntityDialogue(const std::string& name);
+  // Camera target (phase 3): makes this entity the thing the camera watches.
+  bool setEntityCameraTarget(const std::string& name, const CameraTargetComponent& target);
+  bool clearEntityCameraTarget(const std::string& name);
   // --- A character's own bones (stage 35) ---
   // Adds or REPLACES a bone by name, so dragging one in the editor is a
   // repeat call rather than a delete and an add.
@@ -1074,6 +1117,7 @@ private:
 
   pick::Viewport viewport_;
   std::string selected_;
+  std::vector<ActiveDialogue> dialogue_;
 
   LogicRuntime logicRuntime_;
   bool paused_ = false;

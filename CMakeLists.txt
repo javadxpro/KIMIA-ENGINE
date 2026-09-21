@@ -301,6 +301,8 @@ add_executable(kimia_tests
     Tests/src/GraphicsTests.cpp
     Tests/src/AssetsTests.cpp
     Tests/src/SceneTests.cpp
+    Tests/src/SceneFileTests.cpp
+    Tests/src/ComponentTests.cpp
     Tests/src/PhysicsTests.cpp
     Tests/src/WebTests.cpp
     Tests/src/RendererTests.cpp

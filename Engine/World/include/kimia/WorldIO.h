@@ -6,10 +6,16 @@
 
 namespace kimia {
 
-// World serialization on top of the SceneIO-v1 text format. The file is a
-// valid v1 scene: all world metadata lives in `#` comment lines that the v1
-// loader ignores, so old .kimia files (and files written by other tools)
-// still load — missing metadata simply falls back to defaults.
+// World serialization on top of the SceneIO text format. The file is a valid
+// scene: all world metadata lives in `#` comment lines that the scene loader
+// ignores, so old .kimia files (and files written by other tools) still load —
+// missing metadata simply falls back to defaults.
+//
+// The first line carries the version of what the file CONTAINS, which is the
+// scene's own header: `# KIMIA scene v1` for every world that has no entity
+// ids (all of them until phase 3) and `v2` for a world whose scene does (see
+// Documentation/Scene.md). A reader that does not understand a version refuses
+// the file instead of quietly dropping what it cannot read.
 //
 //   # KIMIA scene v1
 //   # world name MyWorld
