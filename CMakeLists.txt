@@ -484,6 +484,7 @@ endif()
 add_library(kimia_world STATIC
     Engine/World/src/World.cpp
     Engine/World/src/Ai.cpp
+    Engine/World/src/Rules.cpp
     Engine/World/src/WorldBuilder.cpp
     Engine/World/src/Studio.cpp
     Engine/World/src/Logic.cpp
