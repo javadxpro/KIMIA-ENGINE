@@ -123,7 +123,12 @@ public:
   u64 soundSequence() const;
 
 private:
-  std::unique_ptr<Impl> impl_;
+  // shared_ptr, not unique_ptr: each connection is served on its own detached
+  // thread, and the last request may still be running when the Server object
+  // goes away. A shared owner keeps that handler's state alive instead of
+  // letting it write into freed memory (ThreadSanitizer/ASan-visible, and a
+  // real crash for a client that keeps its socket open across shutdown).
+  std::shared_ptr<Impl> impl_;
 };
 // Reads the branding files (kimia-intro.mp4 / kimia-logo.png) from a folder
 // and hands them to the server. Looks in `folder`, then ./Branding, then

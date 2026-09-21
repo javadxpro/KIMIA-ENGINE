@@ -400,7 +400,10 @@ struct Server::Impl {
   std::vector<u8> logo;     // the png poster, empty = no logo
   std::string lastSound;
   u64 soundSequence = 0U;
-  SocketHandle listenFd = kInvalidSocket;
+  // Written by start()/stop() on the owner's thread and read by the accept
+  // thread (and by running()), so it must be atomic: ThreadSanitizer flagged
+  // exactly this word as a data race between stop() and acceptLoop().
+  std::atomic<SocketHandle> listenFd{kInvalidSocket};
   u16 boundPort = 0;
   std::string bindAddress = "127.0.0.1";
   std::string authToken;
@@ -440,7 +443,10 @@ void applyInputParams(Server::Impl* impl, const std::map<std::string, std::strin
   }
 }
 
-void handleConnection(SocketHandle socket, Server::Impl* impl) {
+// `impl` is held by value on purpose: this runs on a detached thread that may
+// outlive the Server object, and a strong reference keeps the state it reads
+// alive for as long as the request takes.
+void handleConnection(SocketHandle socket, std::shared_ptr<Server::Impl> impl) {
 #ifdef _WIN32
   const DWORD timeout = 3000U;
   ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
@@ -586,7 +592,7 @@ void handleConnection(SocketHandle socket, Server::Impl* impl) {
     std::lock_guard<std::mutex> lock(impl->mutex);
     response = httpResponse(statusLine(200), "application/json; charset=utf-8", menuJson(impl->menu));
   } else if (path == "/input" && method == "POST") {
-    applyInputParams(impl, parseQuery(query));
+    applyInputParams(impl.get(), parseQuery(query));
     response = httpResponse(statusLine(200), "text/plain; charset=utf-8", "ok");
   } else if (path == "/sound") {
     std::lock_guard<std::mutex> lock(impl->mutex);
@@ -646,16 +652,16 @@ void handleConnection(SocketHandle socket, Server::Impl* impl) {
   closeSocket(socket);
 }
 
-void acceptLoop(Server::Impl* impl) {
+void acceptLoop(std::shared_ptr<Server::Impl> impl) {
   while (!impl->stopFlag.load()) {
     sockaddr_in address{};
     SocketLength addressLength = static_cast<SocketLength>(sizeof(address));
-    const SocketHandle client = ::accept(impl->listenFd, reinterpret_cast<sockaddr*>(&address), &addressLength);
+    const SocketHandle client = ::accept(impl->listenFd.load(), reinterpret_cast<sockaddr*>(&address), &addressLength);
     if (socketFailed(client)) {
       if (impl->stopFlag.load()) break;
       continue;
     }
-    std::thread(handleConnection, client, impl).detach();
+    std::thread(handleConnection, client, impl).detach();  // impl is a shared_ptr copy
   }
 }
 
@@ -736,25 +742,29 @@ bool Server::start(u16 port, const std::string& pageHtml, const ServerOptions& o
   if (::getsockname(socket, reinterpret_cast<sockaddr*>(&bound), &boundLength) == 0) {
     actualPort = ntohs(bound.sin_port);
   }
-  impl_->listenFd = socket;
+  impl_->listenFd.store(socket);
   impl_->boundPort = actualPort;
   impl_->stopFlag.store(false);
-  impl_->acceptThread = std::thread(acceptLoop, impl_.get());
+  impl_->acceptThread = std::thread(acceptLoop, impl_);
   return true;
 }
 
 u16 Server::port() const { return impl_->boundPort; }
 
-bool Server::running() const { return !socketFailed(impl_->listenFd); }
+bool Server::running() const { return !socketFailed(impl_->listenFd.load()); }
 
 void Server::stop() {
   impl_->stopFlag.store(true);
-  if (!socketFailed(impl_->listenFd)) {
-    shutdownSocket(impl_->listenFd);
-    closeSocket(impl_->listenFd);
-    impl_->listenFd = kInvalidSocket;
-  }
+  // shutdown() first: it makes the accept() the listener thread is sitting in
+  // return immediately, on every platform this engine targets.
+  if (!socketFailed(impl_->listenFd.load())) shutdownSocket(impl_->listenFd.load());
+  // ...and join BEFORE close(). Closing the descriptor while another thread is
+  // inside accept() on it is the classic descriptor-reuse bug: the number can
+  // be handed to an unrelated socket in this process and the listener would
+  // then be accepting connections on that one.
   if (impl_->acceptThread.joinable()) impl_->acceptThread.join();
+  const SocketHandle listener = impl_->listenFd.exchange(kInvalidSocket);
+  if (!socketFailed(listener)) closeSocket(listener);
   impl_->boundPort = 0;
 #ifdef _WIN32
   if (impl_->winsockStarted) {
