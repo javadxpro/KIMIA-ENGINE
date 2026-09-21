@@ -785,6 +785,13 @@ std::string handleApi(WorldEditor& editor, const std::string& path,
   // screen. The Workbench is how a story is authored before any dialogue
   // system exists, and the line goes into the .kimia file like everything else.
   if (path == "/api/wire-line") {
+    const std::string name = param(params, "name");
+    // Clearing is a different request from writing one: it must not be
+    // refused for missing the text it is trying to remove.
+    if (flagParam(params, "clear", false)) {
+      if (!editor.clearEntityDialogue(name)) return errorJson("nothing to clear");
+      return okJson();
+    }
     DialogueComponent line;
     line.line = param(params, "text");
     line.trigger = param(params, "wiring");
@@ -792,11 +799,6 @@ std::string handleApi(WorldEditor& editor, const std::string& path,
     line.holdSeconds = numberParam(params, "hold", 3.0);
     if (line.line.empty() || line.trigger.empty()) {
       return errorJson("a line needs text and a wiring");
-    }
-    const std::string name = param(params, "name");
-    if (flagParam(params, "clear", false)) {
-      if (!editor.clearEntityDialogue(name)) return errorJson("nothing to clear");
-      return okJson();
     }
     if (!editor.addEntityDialogue(name, line)) return errorJson("no such object");
     return okJson();
