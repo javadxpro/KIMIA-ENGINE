@@ -1,7 +1,8 @@
 #pragma once
 
-#include <kimia/AssetPipeline.h>
 #include <kimia/Animator.h>
+#include <kimia/AssetManager.h>
+#include <kimia/AssetPipeline.h>
 #include <kimia/GameProfile.h>
 #include <kimia/Hud.h>
 #include <kimia/Input.h>
@@ -349,13 +350,26 @@ public:
   // The editor lists OBJ/FBX files from this directory in the catalog and
   // the user places them as Model_* entities (Unity-style: drop a file into
   // the project assets folder, place it in the scene).
-  void setImportDirectory(const std::string& dir) { importDir_ = dir; }
+  // Where a world's stored asset paths are looked up. Setting it also points
+  // the editor's asset manager at the same folder, so the editor, the frame's
+  // draw-list builder and the Workbench all resolve through one cache.
+  void setImportDirectory(const std::string& dir) {
+    importDir_ = dir;
+    assets_.setProjectRoot(dir);
+  }
   const std::string& importDirectory() const { return importDir_; }
+  // The one place this world's meshes, material tables, skeletons and images
+  // are read (Documentation/AssetManager.md). The frame loop asks the same
+  // manager, so a file is parsed once for the whole session.
+  AssetManager& assetManager() { return assets_; }
+  const AssetManager& assetManager() const { return assets_; }
   // Resolves a world-stored asset path against the configured project assets
-  // folder without changing the path saved in the .kimia file. World files
-  // may outlive the process working directory (especially published games),
-  // so renderers and inspectors must use this instead of opening meshFile
-  // or texture directly.
+  // folder without changing the path saved in the .kimia file, returning the
+  // caller's own spelling when the file is nowhere (so a missing-file message
+  // stays readable). World files may outlive the process working directory
+  // (especially published games), so anything that opens a file by hand must
+  // go through this. Anything that goes through assetManager() does not need
+  // to: the manager resolves internally.
   std::string assetPath(const std::string& file) const;
   void refreshImportFiles();
   usize importFileCount() const { return importFiles_.size(); }
@@ -1103,8 +1117,11 @@ private:
   };
   std::vector<PlayingClip> playingClips_;
   std::string animationError_;
-  std::map<std::string, std::optional<assets::SkinnedAsset>> skinnedCache_;
-  std::map<std::string, std::optional<assets::MeshAsset>> assetCache_;
+  // Rigs the author drew in the editor, keyed by "@entity-rig:<name>". Files
+  // are NOT cached here: those go through assets_ (one cache for the whole
+  // editor, including its failures).
+  std::map<std::string, std::optional<assets::SkinnedAsset>> authorRigCache_;
+  AssetManager assets_;
   std::vector<std::string> triggeredSounds_;
 
   // Visual logic state.

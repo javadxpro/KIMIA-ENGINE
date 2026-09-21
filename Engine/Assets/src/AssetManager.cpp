@@ -159,6 +159,7 @@ const assets::MeshAsset* AssetManager::meshAsset(const std::string& file) {
     entry.error = "cannot read '" + file + "': " + (error.empty() ? std::string("unknown error") : error);
   } else {
     entry.error = lastError_;
+    entry.missingFile = true;
   }
   ++stats_.failures;
   lastError_ = entry.error;
@@ -197,6 +198,7 @@ const assets::SkinnedAsset* AssetManager::skinned(const std::string& file) {
     entry.error = "cannot read '" + file + "': " + (error.empty() ? std::string("unknown error") : error);
   } else {
     entry.error = lastError_;
+    entry.missingFile = true;
   }
   ++stats_.failures;
   lastError_ = entry.error;
@@ -237,6 +239,7 @@ AssetManager::Texture AssetManager::texture(const std::string& file) {
                   (error.empty() ? std::string("not a usable image") : error);
   } else {
     entry.error = lastError_;
+    entry.missingFile = true;
   }
   ++stats_.failures;
   lastError_ = entry.error;
@@ -265,14 +268,18 @@ void AssetManager::clear() {
 
 std::vector<std::string> AssetManager::missingAssets() const {
   std::vector<std::string> missing;
+  // Only files that were not FOUND. A file that exists but does not fit the
+  // request (an OBJ asked for as a skeleton, a PNG asked for as a mesh) has an
+  // error in lastError() but belongs to no "missing asset" list: a world full
+  // of OBJ props would otherwise report every prop as missing.
   for (const auto& entry : meshAssets_) {
-    if (!entry.second.error.empty()) missing.push_back(entry.first);
+    if (entry.second.missingFile) missing.push_back(entry.first);
   }
   for (const auto& entry : skinned_) {
-    if (!entry.second.error.empty()) missing.push_back(entry.first);
+    if (entry.second.missingFile) missing.push_back(entry.first);
   }
   for (const auto& entry : images_) {
-    if (!entry.second.error.empty()) missing.push_back(entry.first);
+    if (entry.second.missingFile) missing.push_back(entry.first);
   }
   std::sort(missing.begin(), missing.end());
   missing.erase(std::unique(missing.begin(), missing.end()), missing.end());

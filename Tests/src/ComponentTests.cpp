@@ -5,6 +5,7 @@
 // Everything here goes through the editor's own API — the same calls the
 // Workbench's /api/* handlers make — so these tests fail if the editor cannot
 // author the component, not merely if the component type exists.
+#include <kimia/RenderSceneBuilder.h>
 #include <kimia/SceneIO.h>
 #include <kimia/World.h>
 #include <kimia/WorldIO.h>
@@ -282,4 +283,110 @@ KIMIA_TEST(dialogue_authored_in_an_editor_survives_save_and_load) {
   KIMIA_REQUIRE(kimia::WorldIO::save(editor.world(), text));
   KIMIA_REQUIRE(text.find(" say \"بازی شروع شد\" \"return\" 1 2.5") != std::string::npos);
   KIMIA_REQUIRE(text.find(" camtarget 1.5 play 0 0 0") != std::string::npos);
+}
+
+// --- One cache for the whole session -----------------------------------------
+// Phase 2's acceptance criterion was "the frame loop never loads assets
+// directly". The editor used to keep its own two caches next to the frame
+// builder's, so importing a model, previewing it and drawing it could read the
+// same file three times. These tests pin the sharing.
+
+KIMIA_TEST(editor_and_frame_builder_share_one_asset_cache) {
+  WorldEditor editor = editorWithWorld();
+  editor.createWorld(editor.profileAt(0));
+  editor.setImportDirectory(KIMIA_ASSET_DIR);
+
+  kimia::AssetManager& shared = editor.assetManager();
+  KIMIA_REQUIRE(shared.roots().size() == 1U);
+
+  std::string error;
+  const std::string placed = editor.importModel("crate.obj", 1.0, error);
+  KIMIA_REQUIRE(placed == "Model_1");
+  KIMIA_REQUIRE(error.empty());
+  const kimia::u64 afterImport = shared.stats().loads;
+  KIMIA_REQUIRE(afterImport >= 1U);
+  // The importer filled the manager, not a private cache: the material table
+  // the draw list wants is already there, and it is the same object the
+  // editor's own material view returns.
+  const kimia::assets::MeshAsset* table = shared.meshAsset("crate.obj");
+  KIMIA_REQUIRE(table != nullptr);
+  KIMIA_REQUIRE(shared.stats().loads == afterImport);
+  KIMIA_REQUIRE(editor.assetFor("crate.obj") == table);
+
+  // The frame builder draws the same model through the same cache.
+  kimia::RenderSceneBuilder builder(shared);
+
+  // The first frame is allowed exactly one new load: the model's material
+  // texture, which importing the geometry never had a reason to open. That is
+  // a first load, not a reload — the point of the shared cache is that there
+  // is no second one.
+  kimia::RenderScene firstFrame;
+  builder.build(editor, firstFrame);
+  KIMIA_REQUIRE(!firstFrame.objects.empty());
+  const kimia::u64 afterFirstFrame = shared.stats().loads;
+  KIMIA_REQUIRE(afterFirstFrame <= afterImport + 1U);
+
+  // A hundred more frames of drawing that model cost nothing at all.
+  const kimia::u64 requestsBefore = shared.stats().requests;
+  for (int frame = 0; frame < 100; ++frame) {
+    kimia::RenderScene scene;
+    builder.build(editor, scene);
+    KIMIA_REQUIRE(!scene.objects.empty());
+  }
+  KIMIA_REQUIRE(shared.stats().requests > requestsBefore);
+  KIMIA_REQUIRE(shared.stats().loads == afterFirstFrame);
+  KIMIA_REQUIRE(shared.lastError().empty());
+  KIMIA_REQUIRE(shared.missingAssets().empty());
+}
+
+KIMIA_TEST(a_missing_model_costs_one_trip_to_the_disk_for_the_whole_editor) {
+  WorldEditor editor = editorWithWorld();
+  editor.createWorld(editor.profileAt(0));
+  editor.setImportDirectory(KIMIA_ASSET_DIR);
+  kimia::AssetManager& shared = editor.assetManager();
+
+  // The editor's own thumbnail/bone paths ask for a file that is not there...
+  KIMIA_REQUIRE(editor.assetFor("models/ghost.obj") == nullptr);
+  const std::string reason = shared.lastError();
+  KIMIA_REQUIRE(reason.find("ghost.obj") != std::string::npos);
+  const kimia::u64 failures = shared.stats().failures;
+  KIMIA_REQUIRE(failures == 1U);
+
+  // ...and repeating the question — ten times, as a listing or a frame would —
+  // neither reads the disk again nor changes the answer or the reason.
+  for (int i = 0; i < 10; ++i) {
+    KIMIA_REQUIRE(editor.assetFor("models/ghost.obj") == nullptr);
+    KIMIA_REQUIRE(shared.lastError() == reason);
+  }
+  KIMIA_REQUIRE(shared.stats().failures == 1U);
+  const std::vector<std::string> missing = shared.missingAssets();
+  KIMIA_REQUIRE(missing.size() == 1U);
+  KIMIA_REQUIRE(missing[0] == "models/ghost.obj");
+
+  // Deleting the file from the user's project is a different question once the
+  // editor is told the asset changed.
+  KIMIA_REQUIRE(shared.invalidate("models/ghost.obj"));
+  KIMIA_REQUIRE(shared.missingAssets().empty());
+}
+
+KIMIA_TEST(importing_a_model_twice_reuses_the_parsed_mesh) {
+  WorldEditor editor = editorWithWorld();
+  editor.createWorld(editor.profileAt(0));
+  editor.setImportDirectory(KIMIA_ASSET_DIR);
+  kimia::AssetManager& shared = editor.assetManager();
+
+  std::string error;
+  KIMIA_REQUIRE(editor.importModel("crate.obj", 1.0, error) == "Model_1");
+  KIMIA_REQUIRE(error.empty());
+  const kimia::u64 loads = shared.stats().loads;
+  KIMIA_REQUIRE(editor.importModel("crate.obj", 2.0, error) == "Model_2");
+  KIMIA_REQUIRE(error.empty());
+  // Two objects, one parse: the second import names a different object and
+  // gets a different scale, from the same cached geometry.
+  KIMIA_REQUIRE(shared.stats().loads == loads);
+  const kimia::EntityData* second = editor.world().scene.get(editor.world().scene.find("Model_2"));
+  KIMIA_REQUIRE(second != nullptr);
+  const kimia::EntityData* first = editor.world().scene.get(editor.world().scene.find("Model_1"));
+  KIMIA_REQUIRE(first != nullptr);
+  KIMIA_REQUIRE(std::abs(second->transform.scale.x - 2.0 * first->transform.scale.x) < 1e-6);
 }

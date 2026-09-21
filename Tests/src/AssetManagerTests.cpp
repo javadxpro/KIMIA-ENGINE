@@ -265,6 +265,17 @@ KIMIA_TEST(asset_manager_caches_skinned_assets_and_says_why_not) {
   const kimia::u64 failures = assets.stats().failures;
   KIMIA_REQUIRE(assets.mesh("crate_skin.png") == nullptr);
   KIMIA_REQUIRE(assets.stats().failures == failures);
+
+  // But "this request has no answer" is not "this file is missing". The file
+  // is right there; it just is not a mesh. A world full of OBJ props asks for
+  // their skeleton every frame, and a missing-asset list that counts each of
+  // those as missing is a list nobody can read. Only a path whose file was
+  // not found belongs in it.
+  KIMIA_REQUIRE(assets.missingAssets().empty());
+  KIMIA_REQUIRE(assets.mesh("models/ghost.obj") == nullptr);
+  const std::vector<std::string> missing = assets.missingAssets();
+  KIMIA_REQUIRE(missing.size() == 1U);
+  KIMIA_REQUIRE(missing[0] == "models/ghost.obj");
 }
 
 KIMIA_TEST(asset_manager_clear_drops_every_cache) {

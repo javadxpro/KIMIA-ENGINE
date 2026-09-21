@@ -43,8 +43,13 @@ public:
   };
 
   AssetManager() = default;
+  // Copying is refused (a second copy of every cached mesh is never wanted),
+  // moving is fine: the editor owns one of these and is itself returned by
+  // value from the helpers that build one.
   AssetManager(const AssetManager&) = delete;
   AssetManager& operator=(const AssetManager&) = delete;
+  AssetManager(AssetManager&&) = default;
+  AssetManager& operator=(AssetManager&&) = default;
 
   // --- Where the files live ------------------------------------------------
   //
@@ -108,9 +113,17 @@ public:
   // Why the LAST request failed; empty after a request that succeeded. Kept
   // in the same shape whether the failure is fresh or remembered, so a caller
   // that only wants to explain itself never gets a blank answer.
+  //
+  // "Failed" includes a file that exists but cannot answer THIS request (an
+  // OBJ asked for as a skeleton, a PNG asked for as a mesh). That is a real
+  // failure of the request, and lastError() says so.
   const std::string& lastError() const { return lastError_; }
-  // Every path that has failed so far, in a stable (sorted) order: what the
-  // editor shows in its "missing assets" list.
+  // Paths whose FILE could not be found, in a stable (sorted) order: what the
+  // editor shows in its "missing assets" list, and what the frame report
+  // counts. A file that exists but does not fit the request is deliberately
+  // NOT in here: "is my skeleton rig missing" is a different question from
+  // "did the model ship with the build", and answering the second with the
+  // first makes the list unreadable on any world with OBJ props.
   std::vector<std::string> missingAssets() const;
 
   const Stats& stats() const { return stats_; }
@@ -119,13 +132,15 @@ public:
 private:
   template <typename T>
   struct Entry {
-    bool tried = false;  // a load was attempted (success or not)
+    bool tried = false;       // a load was attempted (success or not)
+    bool missingFile = false;  // ...and the file itself was not there
     T value{};
     std::string error;
   };
 
   struct ImageEntry {
     bool tried = false;
+    bool missingFile = false;
     Image image;
     u64 revision = 0U;
     std::string error;

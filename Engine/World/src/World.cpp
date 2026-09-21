@@ -215,38 +215,12 @@ WorldEditor::WorldEditor() {
 
 std::string WorldEditor::assetPath(const std::string& file) const {
   if (file.empty()) return std::string();
-
-  namespace fs = std::filesystem;
-  const auto usable = [](const fs::path& path) {
-    std::error_code error;
-    return fs::is_regular_file(path, error) && !error;
-  };
-
-  const fs::path input(file);
-  if (input.is_absolute()) return input.generic_string();
-  // Keep explicit paths such as Tests/assets/foo.obj working. They are also
-  // useful for old worlds made before the project asset root was configurable.
-  if (usable(input)) return input.generic_string();
-
-  const fs::path root(importDir_);
-  if (!root.empty()) {
-    const fs::path underRoot = root / input;
-    if (usable(underRoot)) return underRoot.generic_string();
-
-    // Older Workbench pages sent "assets/foo.obj" even when the configured
-    // root was an absolute "/.../assets". Do not produce "assets/assets";
-    // accept that spelling by resolving it beside the configured root.
-    if (root.has_parent_path() && !root.filename().empty()) {
-      auto first = input.begin();
-      if (first != input.end() && *first == root.filename()) {
-        const fs::path besideRoot = root.parent_path() / input;
-        if (usable(besideRoot)) return besideRoot.generic_string();
-      }
-    }
-  }
-  // Returning the input gives the caller's loader its useful original error
-  // (and keeps missing-file diagnostics human-readable).
-  return input.generic_string();
+  // Resolution lives in the asset manager (order: the path as stored relative
+  // to the working directory, then the project root, with "assets/x" beside a
+  // root already named assets). When the file is nowhere, the caller gets its
+  // own spelling back so a loader's error message stays readable.
+  const std::string resolved = assets_.resolve(file);
+  return resolved.empty() ? file : resolved;
 }
 
 void WorldEditor::rebuildPhysics() {
@@ -1401,8 +1375,7 @@ bool WorldEditor::setEntityTexture(const std::string& entityName, const std::str
   // Refuse a file that is not an image rather than showing a blank object
   // and leaving the person to wonder why. The saved spelling stays relative
   // to the project asset folder; only the loader receives the resolved path.
-  std::string error;
-  if (!assets::loadImage(assetPath(imagePath), error).has_value()) return false;
+  if (assets_.texture(imagePath).empty()) return false;
   target->texture = imagePath;
   return true;
 }
@@ -1891,11 +1864,11 @@ bool WorldEditor::setEntityBone(const std::string& name, const RigBone& bone) {
   for (RigBone& existing : target->rig) {
     if (existing.name != bone.name) continue;
     existing = bone;  // moving a bone is a replace, not a second bone
-    skinnedCache_.erase("@entity-rig:" + name);
+    authorRigCache_.erase("@entity-rig:" + name);
     return true;
   }
   target->rig.push_back(bone);
-  skinnedCache_.erase("@entity-rig:" + name);
+  authorRigCache_.erase("@entity-rig:" + name);
   return true;
 }
 
@@ -1909,7 +1882,7 @@ bool WorldEditor::removeEntityBone(const std::string& name, const std::string& b
       if (child.parent == bone) child.parent.clear();
     }
     target->rig.erase(target->rig.begin() + static_cast<std::ptrdiff_t>(i));
-    skinnedCache_.erase("@entity-rig:" + name);
+    authorRigCache_.erase("@entity-rig:" + name);
     return true;
   }
   return false;
@@ -1919,7 +1892,7 @@ bool WorldEditor::clearEntityRig(const std::string& name) {
   EntityData* target = world_.scene.get(world_.scene.find(name));
   if (target == nullptr) return false;
   target->rig.clear();
-  skinnedCache_.erase("@entity-rig:" + name);
+  authorRigCache_.erase("@entity-rig:" + name);
   return true;
 }
 
@@ -1954,7 +1927,7 @@ bool WorldEditor::fitDefaultRig(const std::string& name, f64 height) {
     bone.swing = kSwing[i];
     target->rig.push_back(bone);
   }
-  skinnedCache_.erase("@entity-rig:" + name);
+  authorRigCache_.erase("@entity-rig:" + name);
   return true;
 }
 
@@ -1981,27 +1954,24 @@ std::string WorldEditor::importModel(const std::string& file, f64 size, std::str
     error = "no file given";
     return std::string();
   }
-  const std::string loadPath = assetPath(file);
-  std::string loadError;
-  auto loaded = assets::loadMesh(loadPath, loadError);
+  // One parse, through the manager: the imported entity and every frame that
+  // draws it then share the same copy of the model.
+  const assets::MeshAsset* loadedAsset = assets_.meshAsset(file);
   // A bare rig (an animation-only FBX) has no mesh to load, but its live
   // stick figure still gives the world something to show and to play.
-  assets::SkinnedAsset rig;
-  const bool skeletonOnly = [&]() {
-    if (loaded.has_value()) return false;
-    std::string rigError;
-    auto rigged = assets::loadFBXSkinned(loadPath, rigError);
-    if (!rigged.has_value() || rigged->skinned.skeleton.isEmpty() ||
-        !rigged->skinned.bindMesh.positions.empty()) {
-      return false;
+  const assets::SkinnedAsset* riggedAsset = nullptr;
+  if (loadedAsset == nullptr) {
+    const assets::SkinnedAsset* candidate = assets_.skinned(file);
+    if (candidate != nullptr && !candidate->skinned.skeleton.isEmpty() &&
+        candidate->skinned.bindMesh.positions.empty()) {
+      riggedAsset = candidate;
     }
-    rig = std::move(*rigged);
-    return true;
-  }();
-  if (!loaded.has_value() && !skeletonOnly) {
-    error = loadError;
+  }
+  if (loadedAsset == nullptr && riggedAsset == nullptr) {
+    error = assets_.lastError();
     return std::string();
   }
+  const assets::SkinnedAsset rig = riggedAsset != nullptr ? *riggedAsset : assets::SkinnedAsset{};
 
   EntityData model;
   // A unique name, so importing the same file twice gives two objects.
@@ -2019,9 +1989,10 @@ std::string WorldEditor::importModel(const std::string& file, f64 size, std::str
   // Fit the model's largest dimension to the requested size, so any file
   // becomes a prop of a predictable size whatever units it was authored in.
   // A bare rig measures its rest-pose joints instead of mesh vertices.
+  const bool skeletonOnly = riggedAsset != nullptr;
   const std::vector<Vec3> rigJoints =
       skeletonOnly ? restJointPositions(rig.skinned.skeleton) : std::vector<Vec3>();
-  const std::vector<Vec3>& fitPoints = skeletonOnly ? rigJoints : loaded->mesh.positions;
+  const std::vector<Vec3>& fitPoints = skeletonOnly ? rigJoints : loadedAsset->mesh.positions;
   if (!fitPoints.empty()) {
     Vec3 lo = fitPoints[0];
     Vec3 hi = fitPoints[0];
@@ -2214,16 +2185,11 @@ void WorldEditor::playClip(const std::string& file, const std::string& clip, con
 
 const assets::SkinnedAsset* WorldEditor::skinnedFor(const std::string& meshFile) {
   if (meshFile.empty()) return nullptr;
-  const std::string loadPath = assetPath(meshFile);
-  const auto cached = skinnedCache_.find(loadPath);
-  if (cached != skinnedCache_.end()) {
-    return cached->second.has_value() ? &(*cached->second) : nullptr;
-  }
-  std::string error;
-  auto inserted = skinnedCache_.emplace(loadPath, assets::loadFBXSkinned(loadPath, error));
-  const std::optional<assets::SkinnedAsset>& stored = inserted.first->second;
-  if (!stored.has_value() || !stored->hasSkeleton()) return nullptr;
-  return &(*stored);
+  // The manager caches the parse AND the failure, so a broken path costs the
+  // disk once for the whole session rather than once per query.
+  const assets::SkinnedAsset* asset = assets_.skinned(meshFile);
+  if (asset == nullptr || !asset->hasSkeleton()) return nullptr;
+  return asset;
 }
 
 const assets::SkinnedAsset* WorldEditor::skinnedForEntity(const EntityData& target) {
@@ -2236,8 +2202,8 @@ const assets::SkinnedAsset* WorldEditor::skinnedForEntity(const EntityData& targ
   if (target.rig.empty()) return nullptr;
 
   const std::string key = "@entity-rig:" + target.name;
-  const auto cached = skinnedCache_.find(key);
-  if (cached != skinnedCache_.end()) {
+  const auto cached = authorRigCache_.find(key);
+  if (cached != authorRigCache_.end()) {
     return cached->second.has_value() ? &(*cached->second) : nullptr;
   }
 
@@ -2298,7 +2264,7 @@ const assets::SkinnedAsset* WorldEditor::skinnedForEntity(const EntityData& targ
   computeWorldMatrices(fallback.skinned.skeleton, rest, world);
   for (usize i = 0; i < world.size(); ++i) fallback.skinned.skeleton.bones[i].inverseBindPose = world[i].inverse();
 
-  auto inserted = skinnedCache_.emplace(key, std::optional<assets::SkinnedAsset>(std::move(fallback)));
+  auto inserted = authorRigCache_.emplace(key, std::optional<assets::SkinnedAsset>(std::move(fallback)));
   return inserted.first->second.has_value() ? &(*inserted.first->second) : nullptr;
 }
 
@@ -2457,20 +2423,14 @@ bool WorldEditor::posedStickMesh(const std::string& entityName, MeshData& out) {
 
 const assets::MeshAsset* WorldEditor::assetFor(const std::string& meshFile) {
   if (meshFile.empty()) return nullptr;
-  const std::string loadPath = assetPath(meshFile);
-  auto cached = assetCache_.find(loadPath);
-  if (cached == assetCache_.end()) {
-    std::string error;
-    cached = assetCache_.emplace(loadPath, assets::loadMeshAsset(loadPath, error)).first;
-  }
-  // One check for both paths, so a cached answer never disagrees with a
-  // fresh one. A mesh with no material info at all draws the old way (one
-  // entity-colored piece); the split path is only for files whose materials
-  // actually say something. That rule is shared with the draw-list builder,
-  // which asks the asset manager for the same table.
-  const std::optional<assets::MeshAsset>& stored = cached->second;
-  if (!stored.has_value() || !assets::splitsByMaterial(*stored)) return nullptr;
-  return &(*stored);
+  // The same table the draw-list builder uses — literally the same object, so
+  // the editor and the frame can never disagree about a model's materials,
+  // and a file is parsed once however many questions are asked about it.
+  const assets::MeshAsset* stored = assets_.meshAsset(meshFile);
+  // A mesh with no material info at all draws the old way (one entity-colored
+  // piece); the split path is only for files whose materials say something.
+  if (stored == nullptr || !assets::splitsByMaterial(*stored)) return nullptr;
+  return stored;
 }
 
 std::vector<BoneMarker> WorldEditor::characterBoneMarkers(const std::string& entityName) {

@@ -115,25 +115,26 @@ BodyKind bodyKindFrom(const std::string& text) {
 // How big the thing actually is in the world, in meters. For a built-in
 // shape that is just its scale; for an imported model it is the file's
 // own size multiplied by the transform.
-f64 entitySpan(const EntityData& entity, const std::string& resolvedAssetPath) {
+f64 entitySpan(AssetManager& assets, const EntityData& entity) {
   const Vec3& s = entity.transform.scale;
   f64 largest = std::max(std::abs(s.x), std::max(std::abs(s.y), std::abs(s.z)));
   if (entity.meshFile.empty()) return largest;
-  std::string error;
-  auto loaded = assets::loadMesh(resolvedAssetPath, error);
+  // The manager's parse, not a private one: measuring a model the frame is
+  // about to draw must not read the file a second time.
+  const assets::MeshAsset* loaded = assets.meshAsset(entity.meshFile);
+  const MeshData* mesh = loaded != nullptr ? &loaded->mesh : nullptr;
   // A bare rig (an animation-only FBX) has no vertices; its rest-pose
   // joints measure it instead.
   std::vector<Vec3> rigJoints;
-  if (!loaded.has_value() || loaded->mesh.positions.empty()) {
-    std::string rigError;
-    auto rigged = assets::loadFBXSkinned(resolvedAssetPath, rigError);
-    if (rigged.has_value() && !rigged->skinned.skeleton.isEmpty()) {
+  if (mesh == nullptr || mesh->positions.empty()) {
+    const assets::SkinnedAsset* rigged = assets.skinned(entity.meshFile);
+    if (rigged != nullptr && !rigged->skinned.skeleton.isEmpty()) {
       rigJoints = restJointPositions(rigged->skinned.skeleton);
     }
   }
   const bool bareRig = !rigJoints.empty();
-  if (!bareRig && (!loaded.has_value() || loaded->mesh.positions.empty())) return largest;
-  const std::vector<Vec3>& points = bareRig ? rigJoints : loaded->mesh.positions;
+  if (!bareRig && (mesh == nullptr || mesh->positions.empty())) return largest;
+  const std::vector<Vec3>& points = bareRig ? rigJoints : mesh->positions;
   Vec3 lo = points[0];
   Vec3 hi = lo;
   for (const Vec3& p : points) {
@@ -149,8 +150,7 @@ f64 entitySpan(const EntityData& entity, const std::string& resolvedAssetPath) {
 }
 
 // One object's full Dossier, as the panel shows it.
-std::string dossierJson(const EntityData& entity, const Vec3& rotationDegrees,
-                        const std::string& resolvedAssetPath) {
+std::string dossierJson(AssetManager& assets, const EntityData& entity, const Vec3& rotationDegrees) {
   std::string out = "{";
   out += "\"name\":" + quoted(entity.name);
   out += ",\"mesh\":" + quoted(entity.meshFile);
@@ -160,7 +160,7 @@ std::string dossierJson(const EntityData& entity, const Vec3& rotationDegrees,
   // A raw scale multiplier is meaningless for an imported model: after
   // bring-in auto-fits the file, "3" means three times the original, not
   // three units across. The Bench shows this measured size instead.
-  out += ",\"span\":" + number(entitySpan(entity, resolvedAssetPath));
+  out += ",\"span\":" + number(entitySpan(assets, entity));
   out += ",\"color\":" + vec3Json(entity.color);
   out += ",\"labels\":" + stringsJson(entity.tags);
 
@@ -282,7 +282,7 @@ std::string handleApi(WorldEditor& editor, const std::string& path,
     const EntityData* entity = editor.entity(param(params, "name"));
     if (entity == nullptr) return errorJson("no such object");
     return "{\"ok\":true,\"dossier\":" +
-           dossierJson(*entity, editor.entityEulerDegrees(entity->name), editor.assetPath(entity->meshFile)) + "}";
+           dossierJson(editor.assetManager(), *entity, editor.entityEulerDegrees(entity->name)) + "}";
   }
 
   // Everything carrying a label — the point of labels is addressing a

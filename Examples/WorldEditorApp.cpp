@@ -526,9 +526,12 @@ int runWorldServer(const WorldServerOptions& opts) {
   // a file read goes through the asset manager, the draw list comes from the
   // scene builder, and the camera rig is the camera controller. The loop
   // itself only moves data between them.
-  kimia::AssetManager assets;
-  assets.addRoot(assetsDir);
-  kimia::RenderSceneBuilder sceneBuilder(assets);
+  //
+  // The manager is the EDITOR'S (editor.assetManager()), not a second one:
+  // importing a model, previewing it in the Workbench and drawing it every
+  // frame are then three readers of one cache, so a file is parsed once for
+  // the whole session however many of them touch it.
+  kimia::RenderSceneBuilder sceneBuilder(editor.assetManager());
   kimia::CameraController cameraController;
   i32 width = frameWidth;
   i32 height = frameHeight;
