@@ -310,6 +310,7 @@ add_executable(kimia_tests
     Tests/src/SkeletonTests.cpp
     Tests/src/StudioTests.cpp
     Tests/src/AssetManagerTests.cpp
+    Tests/src/ViewTests.cpp
     Tests/src/LogicTests.cpp
     Tests/src/PickingTests.cpp
     Tests/src/HudTests.cpp
@@ -319,7 +320,7 @@ add_executable(kimia_tests
     Tests/src/RuntimeTests.cpp
 )
 target_include_directories(kimia_tests PRIVATE Tests/include Engine/Core/include)
-target_link_libraries(kimia_tests PRIVATE kimia_core kimia_math kimia_assets kimia_scene kimia_physics kimia_profile kimia_app kimia_golf kimia_world kimia_raytracer)
+target_link_libraries(kimia_tests PRIVATE kimia_core kimia_math kimia_assets kimia_scene kimia_physics kimia_profile kimia_app kimia_golf kimia_world kimia_raytracer kimia_view)
 target_compile_options(kimia_tests PRIVATE ${KIMIA_STRICT_WARNINGS})
 if(KIMIA_WERROR)
   target_compile_options(kimia_tests PRIVATE ${KIMIA_WERROR_FLAGS})
@@ -498,9 +499,27 @@ if(KIMIA_WERROR)
   target_compile_options(kimia_world PRIVATE ${KIMIA_WERROR_FLAGS})
 endif()
 
+# --- View (frame assembly: scene building, camera, input routing, events) ---
+# The pieces the frame loop used to do inline. Keeping them in the engine
+# instead of in an example means the desktop app, the Android glue and the
+# tests all build a frame the same way, and that a frame can be built without
+# a window, a GL context or the software rasteriser.
+add_library(kimia_view STATIC
+    Engine/View/src/RenderSceneBuilder.cpp
+    Engine/View/src/CameraController.cpp
+    Engine/View/src/InputRouter.cpp
+    Engine/View/src/GameplayEvents.cpp
+)
+target_include_directories(kimia_view PUBLIC Engine/View/include)
+target_link_libraries(kimia_view PUBLIC kimia_world kimia_renderer kimia_platform)
+target_compile_options(kimia_view PRIVATE ${KIMIA_STRICT_WARNINGS})
+if(KIMIA_WERROR)
+  target_compile_options(kimia_view PRIVATE ${KIMIA_WERROR_FLAGS})
+endif()
+
 add_executable(kimia_world_app Examples/WorldEditorApp.cpp)
 set_target_properties(kimia_world_app PROPERTIES OUTPUT_NAME kimia_world)
-target_link_libraries(kimia_world_app PRIVATE kimia_app kimia_world)
+target_link_libraries(kimia_world_app PRIVATE kimia_app kimia_world kimia_view)
 target_compile_options(kimia_world_app PRIVATE ${KIMIA_STRICT_WARNINGS})
 if(KIMIA_WERROR)
   target_compile_options(kimia_world_app PRIVATE ${KIMIA_WERROR_FLAGS})
