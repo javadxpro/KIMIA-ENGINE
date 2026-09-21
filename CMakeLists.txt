@@ -487,6 +487,8 @@ add_library(kimia_world STATIC
     Engine/World/src/Rules.cpp
     Engine/World/src/Camera.cpp
     Engine/World/src/Dialogue.cpp
+    Engine/World/src/Arena.cpp
+    Engine/World/src/Animation.cpp
     Engine/World/src/WorldBuilder.cpp
     Engine/World/src/Studio.cpp
     Engine/World/src/Logic.cpp
