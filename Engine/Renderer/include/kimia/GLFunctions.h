@@ -254,7 +254,12 @@ public:
   }
 
 private:
+#ifndef __EMSCRIPTEN__
+  // The dlopen/LoadLibrary handle. Emscripten links the entry points directly,
+  // so the field does not exist there — and clang's -Wunused-private-field
+  // (with -Werror) fails the wasm build if it is only declared.
   void* handle_ = nullptr;
+#endif
   bool loaded_ = false;
   GLuint (*createShaderFn)(GLenum) = nullptr;
   void (*shaderSourceFn)(GLuint, GLsizei, const GLchar* const*, const GLint*) = nullptr;

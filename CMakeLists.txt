@@ -73,6 +73,12 @@ message(STATUS "KIMIA build type: ${CMAKE_BUILD_TYPE}, compiler: ${CMAKE_CXX_COM
 if(MSVC)
   set(KIMIA_STRICT_WARNINGS /W4 /permissive- /utf-8)
   set(KIMIA_WERROR_FLAGS /WX)
+  # C4996 ("'fopen': This function or variable may be unsafe") is a Microsoft
+  # policy warning about the ISO C file API, not a defect: the engine uses
+  # <cstdio> deliberately so the same code builds on Linux, Android, Termux and
+  # WASM. Silencing the policy keeps /W4 + /WX meaningful for real findings.
+  # (Found by the first windows-msvc-smoke run: Studio.cpp:244.)
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 else()
   # -Wsign-conversion is listed explicitly: GCC's -Wconversion does not imply
   # it in C++ but Clang's does.
