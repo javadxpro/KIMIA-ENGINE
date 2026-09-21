@@ -167,13 +167,101 @@ void PhysicsWorld::clear() {
   steps_ = 0U;
 }
 
+// --- Broad phase (phase 4) ---
+//
+// Sweep and prune along X. The bodies are sorted by the low edge of their AABB
+// and swept in that order: while a later body's low X edge is still behind the
+// current body's high X edge the two can touch, and a Y/Z check decides whether
+// they really can. Only AABB overlaps reach the narrow phase, which has the
+// final say — so the contact list is exactly what the linear scan produced.
+//
+// The first version of this was a uniform grid. It won on a scattered field and
+// LOST on a heap of crates (every crate straddles several cells, so the hashing
+// cost more than the pair tests it saved); the measurement is in
+// Documentation/Physics.md and Tools/src/kimia_bench_physics.cpp. Sweeping needs
+// one sort of N and no hashing at all, and it beats the linear scan on both.
+
+void PhysicsWorld::addPair(u32 idA, u32 idB) const {
+  // Ascending ids, always: the contact list is built from these pairs in this
+  // order, and the sequential-impulse solver is sensitive to it.
+  if (idA == idB) return;
+  candidates_.push_back(idA < idB ? std::make_pair(idA, idB) : std::make_pair(idB, idA));
+}
+
+bool PhysicsWorld::collectDynamicPairs() const {
+  candidates_.clear();
+  const usize bodyCount = spheres_.size() + dynamicBoxes_.size();
+  if (!broadPhaseEnabled_ || bodyCount < kBroadPhaseMinBodies) return false;
+  ++stats_.broadPhaseRebuilds;
+
+  // One proxy per dynamic body, in ascending id order (the two maps share one
+  // id space, so this is also the order the maps would have produced).
+  proxies_.clear();
+  proxies_.reserve(bodyCount);
+  for (const auto& pair : spheres_) {
+    Proxy proxy;
+    proxy.id = pair.first;
+    proxy.sphere = true;
+    proxy.center = pair.second.position;
+    proxy.half = Vec3{pair.second.radius, pair.second.radius, pair.second.radius};
+    proxies_.push_back(proxy);
+  }
+  for (const auto& pair : dynamicBoxes_) {
+    Proxy proxy;
+    proxy.id = pair.first;
+    proxy.sphere = false;
+    proxy.center = pair.second.position;
+    proxy.half = pair.second.halfExtents;
+    proxies_.push_back(proxy);
+  }
+  std::sort(proxies_.begin(), proxies_.end(),
+            [](const Proxy& a, const Proxy& b) { return a.id < b.id; });
+
+  sweepOrder_.resize(proxies_.size());
+  for (usize i = 0; i < sweepOrder_.size(); ++i) sweepOrder_[i] = static_cast<u32>(i);
+  // Sort by the low X edge. Ties go by proxy index, which is id order: two
+  // bodies in the same place must produce the same sweep every single frame, or
+  // the simulation stops being reproducible.
+  std::sort(sweepOrder_.begin(), sweepOrder_.end(), [this](u32 a, u32 b) {
+    const f64 lowA = proxies_[a].center.x - proxies_[a].half.x;
+    const f64 lowB = proxies_[b].center.x - proxies_[b].half.x;
+    if (lowA != lowB) return lowA < lowB;
+    return a < b;
+  });
+
+  for (usize slot = 0; slot < sweepOrder_.size(); ++slot) {
+    const Proxy& a = proxies_[sweepOrder_[slot]];
+    const f64 aHighX = a.center.x + a.half.x;
+    const f64 aLowX = a.center.x - a.half.x;
+    static_cast<void>(aLowX);
+    for (usize ahead = slot + 1U; ahead < sweepOrder_.size(); ++ahead) {
+      const Proxy& b = proxies_[sweepOrder_[ahead]];
+      if (b.center.x - b.half.x > aHighX) break;  // sorted: nobody further can reach
+      // Y, Z, then X exactly: an AABB that overlaps on one axis only is not a
+      // candidate, and the narrow phase would have thrown it away.
+      if (std::abs(b.center.y - a.center.y) > a.half.y + b.half.y) continue;
+      if (std::abs(b.center.z - a.center.z) > a.half.z + b.half.z) continue;
+      if (std::abs(b.center.x - a.center.x) > a.half.x + b.half.x) continue;
+      addPair(a.id, b.id);
+    }
+  }
+  // The sweep emits every pair once, in X order; the contact list needs them in
+  // id order (see addPair), so one sort puts them there. Sorting here is cheap:
+  // the list holds the pairs that really can touch, not all N(N-1)/2 of them.
+  std::sort(candidates_.begin(), candidates_.end());
+  stats_.candidatePairs += static_cast<u64>(candidates_.size());
+  return true;
+}
+
 void PhysicsWorld::collectContacts(std::vector<Contact>& contacts) const {
   contacts.clear();
+  u64 tests = 0U;
 
   // Sphere vs plane.
   for (const auto& spherePair : spheres_) {
     const SphereBody& sphere = spherePair.second;
     for (const auto& planePair : planes_) {
+      ++tests;
       const f64 distance = sphere.position.y - sphere.radius - planePair.second.y;
       if (distance <= 0.0) {  // touching counts: resting bodies stay damped
         contacts.push_back(
@@ -187,6 +275,7 @@ void PhysicsWorld::collectContacts(std::vector<Contact>& contacts) const {
   for (const auto& spherePair : spheres_) {
     const SphereBody& sphere = spherePair.second;
     for (const auto& boxPair : boxes_) {
+      ++tests;
       Vec3 normal;
       f64 penetration = 0.0;
       bool embedded = false;
@@ -198,23 +287,48 @@ void PhysicsWorld::collectContacts(std::vector<Contact>& contacts) const {
     }
   }
 
+  // --- Dynamic vs dynamic ---
+  //
+  // The broad phase (phase 4) offers the pairs whose AABBs overlap; when it does
+  // not run (a small world, or the linear reference path) every pair is tested,
+  // which is what this used to do always. Either way the NARROW phase decides,
+  // so the contact list is identical — the sweep only skips pairs that could not
+  // have touched. The three families are walked in their own passes because the
+  // ORDER of contacts decides how sequential impulses settle a stack:
+  // sphere-sphere, then box-box, then sphere-box, each ascending by id.
+  const bool candidateDriven = collectDynamicPairs();
+
   // Sphere vs sphere.
-  for (auto a = spheres_.begin(); a != spheres_.end(); ++a) {
-    for (auto b = std::next(a); b != spheres_.end(); ++b) {
-      const Vec3 delta = b->second.position - a->second.position;
-      const f64 radii = a->second.radius + b->second.radius;
-      const f64 distanceSquared = delta.lengthSquared();
-      if (distanceSquared >= radii * radii) continue;
-      Vec3 normal{1.0, 0.0, 0.0};
-      f64 penetration = radii;
-      if (distanceSquared > kEpsilon) {
-        const f64 distance = std::sqrt(distanceSquared);
-        normal = delta / distance;
-        penetration = radii - distance;
+  const auto sphereSphereContact = [this, &contacts](u32 idA, u32 idB) {
+    const SphereBody* a = sphere(idA);
+    const SphereBody* b = sphere(idB);
+    if (a == nullptr || b == nullptr) return;
+    const Vec3 delta = b->position - a->position;
+    const f64 radii = a->radius + b->radius;
+    const f64 distanceSquared = delta.lengthSquared();
+    if (distanceSquared >= radii * radii) return;
+    Vec3 normal{1.0, 0.0, 0.0};
+    f64 penetration = radii;
+    if (distanceSquared > kEpsilon) {
+      const f64 distance = std::sqrt(distanceSquared);
+      normal = delta / distance;
+      penetration = radii - distance;
+    }
+    const f64 restitution = std::max(a->restitution, b->restitution);
+    contacts.push_back(Contact{true, true, false, false, idA, idB, normal, penetration, restitution});
+  };
+  if (candidateDriven) {
+    for (const auto& pair : candidates_) {
+      if (!sphere(pair.first) || !sphere(pair.second)) continue;
+      ++tests;
+      sphereSphereContact(pair.first, pair.second);
+    }
+  } else {
+    for (auto a = spheres_.begin(); a != spheres_.end(); ++a) {
+      for (auto b = std::next(a); b != spheres_.end(); ++b) {
+        ++tests;
+        sphereSphereContact(a->first, b->first);
       }
-      const f64 restitution = std::max(a->second.restitution, b->second.restitution);
-      contacts.push_back(
-          Contact{true, true, false, false, a->first, b->first, normal, penetration, restitution});
     }
   }
 
@@ -222,6 +336,7 @@ void PhysicsWorld::collectContacts(std::vector<Contact>& contacts) const {
   for (const auto& boxPair : dynamicBoxes_) {
     const DynamicBox& box = boxPair.second;
     for (const auto& planePair : planes_) {
+      ++tests;
       const f64 distance = box.position.y - box.halfExtents.y - planePair.second.y;
       if (distance <= 0.0) {  // touching counts: resting bodies stay damped
         contacts.push_back(
@@ -235,6 +350,7 @@ void PhysicsWorld::collectContacts(std::vector<Contact>& contacts) const {
   for (const auto& boxPair : dynamicBoxes_) {
     const DynamicBox& box = boxPair.second;
     for (const auto& staticPair : boxes_) {
+      ++tests;
       Vec3 normal;
       f64 penetration = 0.0;
       if (boxBoxContact(box.position, box.halfExtents, staticPair.second.center, staticPair.second.halfExtents,
@@ -247,34 +363,63 @@ void PhysicsWorld::collectContacts(std::vector<Contact>& contacts) const {
   }
 
   // Dynamic box vs dynamic box.
-  for (auto a = dynamicBoxes_.begin(); a != dynamicBoxes_.end(); ++a) {
-    for (auto b = std::next(a); b != dynamicBoxes_.end(); ++b) {
-      Vec3 normal;
-      f64 penetration = 0.0;
-      if (boxBoxContact(a->second.position, a->second.halfExtents, b->second.position, b->second.halfExtents,
-                        normal, penetration)) {
-        const f64 restitution = std::max(a->second.restitution, b->second.restitution);
-        contacts.push_back(
-            Contact{false, false, false, false, a->first, b->first, normal, penetration, restitution});
+  const auto boxBoxDynamicContact = [this, &contacts](u32 idA, u32 idB) {
+    const DynamicBox* a = dynamicBox(idA);
+    const DynamicBox* b = dynamicBox(idB);
+    if (a == nullptr || b == nullptr) return;
+    Vec3 normal;
+    f64 penetration = 0.0;
+    if (!boxBoxContact(a->position, a->halfExtents, b->position, b->halfExtents, normal, penetration)) return;
+    const f64 restitution = std::max(a->restitution, b->restitution);
+    contacts.push_back(Contact{false, false, false, false, idA, idB, normal, penetration, restitution});
+  };
+  if (candidateDriven) {
+    for (const auto& pair : candidates_) {
+      if (!dynamicBox(pair.first) || !dynamicBox(pair.second)) continue;
+      ++tests;
+      boxBoxDynamicContact(pair.first, pair.second);
+    }
+  } else {
+    for (auto a = dynamicBoxes_.begin(); a != dynamicBoxes_.end(); ++a) {
+      for (auto b = std::next(a); b != dynamicBoxes_.end(); ++b) {
+        ++tests;
+        boxBoxDynamicContact(a->first, b->first);
       }
     }
   }
 
   // Sphere vs dynamic box.
-  for (const auto& spherePair : spheres_) {
-    const SphereBody& sphere = spherePair.second;
-    for (const auto& boxPair : dynamicBoxes_) {
-      Vec3 normal;
-      f64 penetration = 0.0;
-      bool embedded = false;
-      if (sphereBoxContact(sphere.position, sphere.radius, boxPair.second.position, boxPair.second.halfExtents,
-                           normal, penetration, embedded)) {
-        const f64 restitution = std::max(sphere.restitution, boxPair.second.restitution);
-        contacts.push_back(Contact{true, false, false, embedded, spherePair.first, boxPair.first, normal,
-                                   penetration, restitution});
+  const auto sphereBoxDynamicContact = [this, &contacts](u32 sphereId, u32 boxId) {
+    const SphereBody* body = sphere(sphereId);
+    const DynamicBox* box = dynamicBox(boxId);
+    if (body == nullptr || box == nullptr) return;
+    Vec3 normal;
+    f64 penetration = 0.0;
+    bool embedded = false;
+    if (!sphereBoxContact(body->position, body->radius, box->position, box->halfExtents, normal,
+                          penetration, embedded)) {
+      return;
+    }
+    const f64 restitution = std::max(body->restitution, box->restitution);
+    contacts.push_back(
+        Contact{true, false, false, embedded, sphereId, boxId, normal, penetration, restitution});
+  };
+  if (candidateDriven) {
+    for (const auto& pair : candidates_) {
+      if (!sphere(pair.first) || !dynamicBox(pair.second)) continue;
+      ++tests;
+      sphereBoxDynamicContact(pair.first, pair.second);
+    }
+  } else {
+    for (const auto& spherePair : spheres_) {
+      for (const auto& boxPair : dynamicBoxes_) {
+        ++tests;
+        sphereBoxDynamicContact(spherePair.first, boxPair.first);
       }
     }
   }
+
+  stats_.pairTests += tests;
 }
 
 void PhysicsWorld::resolvePair(const Contact& contact, bool countContacts) {
@@ -516,6 +661,7 @@ void PhysicsWorld::step() {
 
   time_ += fixedDt_;
   ++steps_;
+  ++stats_.steps;
 }
 
 u32 PhysicsWorld::advance(f64 hostSeconds) {

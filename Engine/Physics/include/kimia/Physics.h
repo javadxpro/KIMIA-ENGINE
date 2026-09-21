@@ -5,6 +5,7 @@
 #include <kimia/Vec.h>
 
 #include <map>
+#include <utility>
 #include <vector>
 
 namespace kimia {
@@ -141,6 +142,36 @@ inline constexpr f64 kWindGroundFactor = 0.35;
 // a wind-blown ball comes to a stop instead of drifting for ever.
 inline constexpr f64 kWindGroundGrip = 0.5;
 
+// --- Broad phase (phase 4) ---
+//
+// Finding which dynamic bodies can possibly touch used to mean testing every
+// pair: with N bodies that is N(N-1)/2 narrow-phase tests, and the solver
+// re-derives them 21 times per fixed step (20 impulse iterations plus the
+// friction pass). The broad phase answers "what is near this body" instead, so
+// the work follows the local density rather than the body count.
+//
+// What it is: SWEEP AND PRUNE along X. Bodies are sorted by the low edge of
+// their AABB; walking that order, a body is only compared with the ones whose
+// low X edge is still behind its own high X edge, and each of those is then
+// checked on Y and Z. A pair that survives is offered to the narrow phase.
+//
+// Why not a uniform grid, the more obvious choice: it was written first and
+// measured (Tools/src/kimia_bench_physics.cpp). On a scattered field of 1000
+// bodies it won big, but on the scene that matters for a street pitch — 100
+// crates stacked in one heap — it came out slower than the linear scan it was
+// meant to replace: every crate straddles several cells, so the hashing per
+// body per collect bought fewer pair tests than it cost. Sweep and prune needs
+// one sort of N and no hashing at all, and it beats the linear scan on both
+// scenes. The numbers are in Documentation/Physics.md.
+//
+// The rule this whole mechanism is built on: the broad phase may only REJECT
+// pairs the narrow phase would have rejected anyway. It never invents a
+// contact and never drops one, so the contact list — and therefore the
+// simulation — is unchanged, and setBroadPhaseEnabled(false) keeps the linear
+// scan available as the reference the broad phase is measured against
+// (Tests/src/PhysicsTests.cpp runs both and demands bit-identical bodies).
+inline constexpr usize kBroadPhaseMinBodies = 16U;
+
 // Builds a wind from a speed (m/s^2) and a direction (radians, 0 = toward -Z,
 // matching WorldEditor::aimYaw). The speed is clamped to [0, kMaxWind...].
 Wind makeWind(f64 speed, f64 direction);
@@ -261,6 +292,28 @@ public:
   // Returns how many fixed steps ran this frame.
   u32 advance(f64 hostSeconds);
 
+  // --- Broad phase statistics (phase 4) ---
+  //
+  // How much work the contact search actually did. "The broad phase works" is
+  // a claim; a pair count before and after is a measurement. Candidate pairs
+  // are what the broad phase offered the narrow phase; pair tests are the exact
+  // tests performed (those candidates plus the parts that are still brute
+  // force: dynamic-vs-static and sphere-vs-plane).
+  struct Stats {
+    u64 steps = 0U;
+    u64 candidatePairs = 0U;      // pairs the broad phase offered
+    u64 pairTests = 0U;           // narrow-phase tests actually run
+    u64 broadPhaseRebuilds = 0U;  // broad-phase sorts (one per collect)
+  };
+  const Stats& stats() const { return stats_; }
+  void resetStats() { stats_ = Stats{}; }
+
+  // Sweep and prune (the default) or the linear scan it replaced. Both produce
+  // the same simulation; the switch exists so that equivalence is a test, and
+  // so a pathological scene can be compared against the reference.
+  void setBroadPhaseEnabled(bool enabled) { broadPhaseEnabled_ = enabled; }
+  bool broadPhaseEnabled() const { return broadPhaseEnabled_; }
+
   f64 fixedDt() const { return fixedDt_; }
   f64 time() const { return time_; }
   u64 stepCount() const { return steps_; }
@@ -283,6 +336,12 @@ private:
   };
 
   void collectContacts(std::vector<Contact>& contacts) const;
+  // Fills candidates_ with the dynamic-dynamic pairs whose AABBs overlap
+  // (ascending by id, each pair offered once). Returns false when the sweep was
+  // not worth running, leaving candidates_ empty; the caller then walks every
+  // pair — which is what this did before the broad phase existed.
+  bool collectDynamicPairs() const;
+  void addPair(u32 idA, u32 idB) const;
   void resolvePair(const Contact& contact, bool countContacts);
   void applyPairFriction(const Contact& contact);
   bool characterSupported(const CharacterBody& character, u32 selfId) const;
@@ -300,6 +359,24 @@ private:
   u32 nextId_ = 1U;
   f64 time_ = 0.0;
   u64 steps_ = 0U;
+
+  bool broadPhaseEnabled_ = true;
+
+  // The sweep is a cache rebuilt from the bodies on every collect, never state:
+  // `mutable` for the same reason Scene's name index is (a const query may fill
+  // it, and it can always be thrown away and rebuilt). The containers keep their
+  // capacity across collects, so a steady frame does not allocate here. Same for
+  // the counters, which exist to be reported, not to change behaviour.
+  struct Proxy {  // one dynamic body's AABB, in ascending id order
+    u32 id = 0U;
+    bool sphere = false;
+    Vec3 center{0.0, 0.0, 0.0};
+    Vec3 half{0.0, 0.0, 0.0};
+  };
+  mutable std::vector<Proxy> proxies_;
+  mutable std::vector<u32> sweepOrder_;  // proxy indices, sorted by low X edge
+  mutable std::vector<std::pair<u32, u32>> candidates_;  // ascending by id
+  mutable Stats stats_;
 };
 
 }  // namespace kimia

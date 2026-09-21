@@ -368,6 +368,16 @@ if(KIMIA_BUILD_TESTS)
 endif()
 
 if(KIMIA_BUILD_TOOLS)
+  # Physics benchmark: the numbers phase 4 is judged by (ms per step and pair
+  # tests at 10/100/1000 bodies). No assertion on wall-clock time, so a slow CI
+  # machine can never fail the build over it — the tests pin the properties.
+  add_executable(kimia_bench_physics Tools/src/kimia_bench_physics.cpp)
+  target_link_libraries(kimia_bench_physics PRIVATE kimia_physics)
+  target_compile_options(kimia_bench_physics PRIVATE ${KIMIA_STRICT_WARNINGS})
+  if(KIMIA_WERROR)
+    target_compile_options(kimia_bench_physics PRIVATE ${KIMIA_WERROR_FLAGS})
+  endif()
+
   add_executable(kimia_assets_cli Tools/src/kimia_assets.cpp)
   target_link_libraries(kimia_assets_cli PRIVATE kimia_assets)
   target_compile_options(kimia_assets_cli PRIVATE ${KIMIA_STRICT_WARNINGS})

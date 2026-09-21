@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <utility>
+#include <vector>
 
 namespace {
 using kimia::DynamicBox;
@@ -13,6 +14,7 @@ using kimia::SphereBody;
 using kimia::Vec3;
 using kimia::f64;
 using kimia::u32;
+using kimia::usize;
 
 constexpr f64 kG = kimia::kGravity;
 constexpr f64 kDt = 1.0 / 120.0;
@@ -1062,4 +1064,155 @@ KIMIA_TEST(physics_raycast_finds_the_ground_and_ignores_a_zero_ray) {
   KIMIA_REQUIRE(!world.raycast(Vec3{0.0, 3.0, 0.0}, Vec3{0.0, 0.0, 0.0}, 50.0).hit);
   // Neither is a zero range.
   KIMIA_REQUIRE(!world.raycast(Vec3{0.0, 3.0, 0.0}, Vec3{0.0, -1.0, 0.0}, 0.0).hit);
+}
+
+// --- Broad phase (phase 4) ---------------------------------------------------
+//
+// The grid exists to do less work, never to do different work. These tests pin
+// both halves of that: the same scene stepped with the grid and with the linear
+// scan must produce bit-identical bodies, and the grid must actually cut the
+// number of pair tests it pays for. Either claim alone is easy to satisfy
+// wrongly — a fast wrong answer, or a correct slow one.
+
+namespace {
+
+// A scene with `loose` scattered balls and `crates` boxes on a 40 x 40 field:
+// the same shape of world the pitch produces (a few dozen loose objects on a
+// big floor), at a size the tests can afford.
+PhysicsWorld crowdedWorld(usize loose, usize crates, f64 spread = 20.0) {
+  PhysicsWorld world;
+  world.character()->position = Vec3{0.0, 0.5, -39.0};  // the player, out of the way
+  world.addPlane(0.0);
+  for (usize i = 0; i < loose; ++i) {
+    SphereBody ball;
+    const f64 t = static_cast<f64>(i);
+    // A deterministic scatter: a golden-ratio walk, so no two balls share a spot
+    // and the pattern does not depend on the platform's floating-point library.
+    ball.position = Vec3{std::fmod(t * 0.6180339887498949, 1.0) * spread - spread * 0.5, 2.0 + t * 0.01,
+                         std::fmod(t * 0.7548776662466927, 1.0) * spread - spread * 0.5};
+    ball.velocity = Vec3{0.4, 0.0, -0.3};
+    world.addSphere(ball);
+  }
+  for (usize i = 0; i < crates; ++i) {
+    DynamicBox box;
+    const f64 t = static_cast<f64>(i);
+    box.position = Vec3{std::fmod(t * 0.3819660112501051, 1.0) * spread - spread * 0.5, 0.5 + t * 0.5,
+                        std::fmod(t * 0.5698402909980532, 1.0) * spread - spread * 0.5};
+    world.addDynamicBox(box);
+  }
+  return world;
+}
+
+// Every body's exact position, so two runs can be compared bit for bit.
+std::vector<f64> positionsOf(const PhysicsWorld& world) {
+  std::vector<f64> out;
+  for (u32 id = 1U; id < 4000U; ++id) {
+    const kimia::SphereBody* sphere = world.sphere(id);
+    if (sphere != nullptr) {
+      out.push_back(sphere->position.x);
+      out.push_back(sphere->position.y);
+      out.push_back(sphere->position.z);
+      continue;
+    }
+    const DynamicBox* box = world.dynamicBox(id);
+    if (box != nullptr) {
+      out.push_back(box->position.x);
+      out.push_back(box->position.y);
+      out.push_back(box->position.z);
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+KIMIA_TEST(physics_broad_phase_gives_bit_identical_bodies) {
+  // 24 balls and 16 crates: comfortably past the threshold where the sweep
+  // runs, and crowded enough that plenty of pairs really do touch.
+  std::vector<f64> withGrid;
+  std::vector<f64> without;
+  {
+    PhysicsWorld world = crowdedWorld(24U, 16U);
+    world.setBroadPhaseEnabled(true);
+    for (u32 i = 0; i < 240U; ++i) world.step();
+    KIMIA_REQUIRE(world.stats().broadPhaseRebuilds > 0U);  // it really ran the sweep
+    withGrid = positionsOf(world);
+  }
+  {
+    PhysicsWorld world = crowdedWorld(24U, 16U);
+    world.setBroadPhaseEnabled(false);
+    for (u32 i = 0; i < 240U; ++i) world.step();
+    KIMIA_REQUIRE(world.stats().broadPhaseRebuilds == 0U);  // really the linear scan
+    without = positionsOf(world);
+  }
+  KIMIA_REQUIRE(withGrid.size() == without.size());
+  KIMIA_REQUIRE(!withGrid.empty());
+  for (usize i = 0; i < withGrid.size(); ++i) {
+    // Exactly equal: the broad phase may only skip pairs the narrow phase
+    // would have rejected, so no position may move by even one bit.
+    KIMIA_REQUIRE(withGrid[i] == without[i]);
+  }
+}
+
+KIMIA_TEST(physics_broad_phase_cuts_the_pair_tests_by_an_order_of_magnitude) {
+  // 100 bodies is the benchmark's middle size. All-pairs would be 4950 pairs
+  // per collect and the solver collects 21 times per step, so the linear scan
+  // pays ~104k tests a step no matter where the bodies are. The sweep pays for
+  // the pairs that are actually near each other.
+  PhysicsWorld world = crowdedWorld(60U, 40U);
+  world.resetStats();
+  for (u32 i = 0; i < 120U; ++i) world.step();
+  const kimia::u64 tests = world.stats().pairTests;
+  const kimia::u64 collects = world.stats().steps * 21U;  // 20 solver iterations + friction
+  const kimia::u64 allPairs = 100ULL * 99ULL / 2ULL;
+  KIMIA_REQUIRE(world.stats().steps == 120U);
+  KIMIA_REQUIRE(tests < allPairs * collects / 10ULL);  // at least 10x less work
+  KIMIA_REQUIRE(world.stats().candidatePairs > 0U);    // and it did find neighbours
+}
+
+KIMIA_TEST(physics_broad_phase_keeps_a_dense_pile_stable) {
+  // The hard case for any broad phase: everything in one place. The sweep must
+  // still be correct on it — and the pile must still settle, which is what
+  // "correct" means for a stack of crates.
+  std::vector<f64> withGrid;
+  std::vector<f64> without;
+  const auto run = [](bool grid, std::vector<f64>& out) {
+    PhysicsWorld world;
+    world.character()->position = Vec3{0.0, 0.5, -39.0};
+    world.addPlane(0.0);
+    for (u32 i = 0; i < 20U; ++i) {
+      DynamicBox box;
+      // 20 crates in a 2 x 2 x 5 tower of towers: dense in every axis.
+      box.position = Vec3{static_cast<f64>(i % 2U) * 1.01 - 0.5,
+                          0.5 + static_cast<f64>((i / 4U) % 5U) * 1.01,
+                          static_cast<f64>((i / 2U) % 2U) * 1.01 - 0.5};
+      world.addDynamicBox(box);
+    }
+    world.setBroadPhaseEnabled(grid);
+    for (u32 i = 0; i < 600U; ++i) world.step();
+    out = positionsOf(world);
+  };
+  run(true, withGrid);
+  run(false, without);
+  KIMIA_REQUIRE(withGrid.size() == without.size());
+  for (usize i = 0; i < withGrid.size(); ++i) KIMIA_REQUIRE(withGrid[i] == without[i]);
+  // The pile did not explode or sink: every crate is still above the floor.
+  for (usize i = 1; i < withGrid.size(); i += 3U) KIMIA_REQUIRE(withGrid[i] > 0.4);
+}
+
+KIMIA_TEST(physics_a_small_world_never_runs_the_sweep) {
+  // Below the threshold the sweep costs more than it saves, so it is not run.
+  // A hunch world (a ball and a crate) keeps the code path it had before the
+  // grid existed — which is also why every older test still passes unchanged.
+  PhysicsWorld world;
+  world.addPlane(0.0);
+  SphereBody ball;
+  ball.position = Vec3{0.0, 1.0, 0.0};
+  world.addSphere(ball);
+  DynamicBox box;
+  box.position = Vec3{0.0, 0.5, 0.0};
+  world.addDynamicBox(box);
+  for (u32 i = 0; i < 10U; ++i) world.step();
+  KIMIA_REQUIRE(world.stats().broadPhaseRebuilds == 0U);
+  KIMIA_REQUIRE(world.stats().pairTests > 0U);  // it still looked for contacts
 }
