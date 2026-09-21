@@ -61,11 +61,17 @@ if [ -z "$BUILD_DIR" ]; then
   esac
 fi
 
-# One toolchain note: the previous runs in this sandbox had a user-local cmake.
+# A user-local install (pip install --user cmake ninja) is on PATH in some
+# sandboxes but not others; look there before giving up.
 if ! command -v cmake >/dev/null 2>&1 && [ -x "$HOME/.local/bin/cmake" ]; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
-command -v cmake >/dev/null 2>&1 || die "cmake not found (Termux: pkg install cmake; Debian: apt-get install cmake)"
+if ! command -v cmake >/dev/null 2>&1; then
+  die "cmake not found. Install it with one of:
+      python3 -m pip install --user cmake ninja
+      sudo apt-get install -y cmake ninja-build
+      pkg install -y cmake ninja            # Termux"
+fi
 
 say "checkout $ROOT ($(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?') @ $(git rev-parse --short HEAD 2>/dev/null || echo '?'))"
 ENGINE_VERSION="$(grep -o 'KIMIA_ENGINE_VERSION "[0-9.]*"' Engine/Core/include/kimia/Version.h | grep -o '[0-9.]*')"

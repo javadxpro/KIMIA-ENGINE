@@ -273,6 +273,7 @@ add_library(kimia_assets STATIC
     Engine/Graphics/src/Animator.cpp
     Engine/Assets/src/AssetPipeline.cpp
     Engine/Assets/src/Audio.cpp
+    Engine/Assets/src/AssetManager.cpp
 )
 target_include_directories(kimia_assets PUBLIC
     Engine/Graphics/include
@@ -308,6 +309,7 @@ add_executable(kimia_tests
     Tests/src/RaytracerTests.cpp
     Tests/src/SkeletonTests.cpp
     Tests/src/StudioTests.cpp
+    Tests/src/AssetManagerTests.cpp
     Tests/src/LogicTests.cpp
     Tests/src/PickingTests.cpp
     Tests/src/HudTests.cpp
