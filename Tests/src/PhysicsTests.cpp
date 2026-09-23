@@ -1065,6 +1065,111 @@ KIMIA_TEST(physics_dry_weather_changes_nothing_at_all) {
   KIMIA_REQUIRE(untouched.z == explicitDry.z);
 }
 
+// --- Stage 35: surface materials ---
+
+KIMIA_TEST(physics_the_default_material_is_the_old_behaviour_exactly) {
+  // The whole compatibility promise in one test: a world that never sets a
+  // material must be bit-for-bit the world this engine had before materials
+  // existed. Setting the neutral material explicitly may not change one bit.
+  const auto roll = [](bool touchMaterial) {
+    PhysicsWorld world;
+    world.addPlane(0.0);
+    if (touchMaterial) world.setSurfaceMaterial(kimia::SurfaceMaterial{1.0, 1.0});
+    SphereBody ball;
+    ball.position = Vec3{0.0, 0.5, 0.0};
+    ball.radius = 0.12;
+    ball.restitution = 0.6;
+    ball.velocity = Vec3{3.0, 2.0, -2.0};
+    const kimia::u32 id = world.addSphere(ball);
+    for (kimia::u32 i = 0; i < 400U; ++i) world.step();
+    return world.sphere(id)->position;
+  };
+  const Vec3 untouched = roll(false);
+  const Vec3 neutral = roll(true);
+  KIMIA_REQUIRE(untouched.x == neutral.x);
+  KIMIA_REQUIRE(untouched.y == neutral.y);
+  KIMIA_REQUIRE(untouched.z == neutral.z);
+}
+
+KIMIA_TEST(physics_a_slick_pitch_lets_the_ball_run_and_a_grippy_one_stops_it) {
+  // Same kick, three pitches. This is the point of the material: the pitch
+  // decides how far a pass travels, and it does so through the ground contact.
+  const auto roll = [](const kimia::SurfaceMaterial& material) {
+    PhysicsWorld world;
+    world.addPlane(0.0);
+    world.setSurfaceMaterial(material);
+    SphereBody ball;
+    ball.position = Vec3{0.0, 0.2, 0.0};
+    ball.radius = 0.11;
+    ball.velocity = Vec3{0.0, 0.0, -6.0};
+    const kimia::u32 id = world.addSphere(ball);
+    for (kimia::u32 i = 0; i < 600U; ++i) world.step();  // five seconds
+    return -world.sphere(id)->position.z;                // metres travelled
+  };
+  const f64 grass = roll(kimia::SurfaceMaterial{1.0, 1.0});
+  const f64 asphalt = roll(kimia::SurfaceMaterial{0.62, 1.18});
+  const f64 sand = roll(kimia::SurfaceMaterial{2.60, 0.55});
+  KIMIA_REQUIRE(grass > 1.0);       // the reference roll really travels
+  KIMIA_REQUIRE(sand < grass * 0.75);   // sand kills it
+  KIMIA_REQUIRE(asphalt > grass * 1.5); // asphalt lets it run
+}
+
+KIMIA_TEST(physics_a_bouncy_pitch_gives_the_ball_more_back) {
+  // Drop the same ball on two pitches and measure the rebound apex.
+  const auto apexAfterFirstBounce = [](const kimia::SurfaceMaterial& material) {
+    PhysicsWorld world;
+    world.addPlane(0.0);
+    world.setSurfaceMaterial(material);
+    SphereBody ball;
+    ball.position = Vec3{0.0, 3.0, 0.0};
+    ball.radius = 0.11;
+    ball.restitution = 0.55;
+    const kimia::u32 id = world.addSphere(ball);
+    bool bounced = false;
+    f64 apex = 0.0;
+    for (kimia::u32 i = 0; i < 900U; ++i) {
+      world.step();
+      const f64 y = world.sphere(id)->position.y;
+      if (!bounced && world.sphere(id)->velocity.y > 0.0) bounced = true;  // it just left the ground
+      if (bounced) apex = std::max(apex, y);
+      if (bounced && world.sphere(id)->velocity.y < 0.0) break;  // on the way down again
+    }
+    return apex;
+  };
+  const f64 grass = apexAfterFirstBounce(kimia::SurfaceMaterial{1.0, 1.0});
+  const f64 metal = apexAfterFirstBounce(kimia::SurfaceMaterial{0.40, 1.45});
+  const f64 sand = apexAfterFirstBounce(kimia::SurfaceMaterial{2.60, 0.55});
+  KIMIA_REQUIRE(metal > grass * 1.05);  // a drain cover is livelier
+  KIMIA_REQUIRE(sand < grass * 0.9);    // a sandlot swallows it
+}
+
+KIMIA_TEST(physics_material_and_weather_stack_deterministically) {
+  // Both multipliers apply to the same contact, and the pair is still stable
+  // across host frame rates: same world at 60 Hz and at 120 Hz ends in the
+  // same place. Wet asphalt is slicker than dry asphalt, and both are slicker
+  // than wet grass.
+  const auto roll = [](const kimia::SurfaceMaterial& material, f64 wetness, u32 steps) {
+    PhysicsWorld world;
+    world.addPlane(0.0);
+    world.setSurfaceMaterial(material);
+    world.setWetness(wetness);
+    SphereBody ball;
+    ball.position = Vec3{0.0, 0.2, 0.0};
+    ball.radius = 0.11;
+    ball.velocity = Vec3{0.0, 0.0, -6.0};
+    const kimia::u32 id = world.addSphere(ball);
+    for (kimia::u32 i = 0; i < steps; ++i) world.step();
+    return world.sphere(id)->position;
+  };
+  const Vec3 dryAsphalt = roll(kimia::SurfaceMaterial{0.62, 1.18}, 0.0, 600U);
+  const Vec3 wetAsphalt = roll(kimia::SurfaceMaterial{0.62, 1.18}, 0.9, 600U);
+  const Vec3 wetGrass = roll(kimia::SurfaceMaterial{1.0, 1.0}, 0.9, 600U);
+  KIMIA_REQUIRE(wetAsphalt.z < dryAsphalt.z);   // a wet street is slicker
+  KIMIA_REQUIRE(wetAsphalt.z < wetGrass.z);     // and asphalt beats grass, wet or not
+  const Vec3 twice = roll(kimia::SurfaceMaterial{0.62, 1.18}, 0.9, 1200U);
+  KIMIA_REQUIRE(twice.x == wetAsphalt.x && twice.y == wetAsphalt.y && twice.z == wetAsphalt.z);
+}
+
 // --- Stage 30: raycasting ---
 
 KIMIA_TEST(physics_raycast_hits_the_nearest_box_with_the_right_normal) {

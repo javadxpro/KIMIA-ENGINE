@@ -626,6 +626,32 @@ std::string handleApi(WorldEditor& editor, const std::string& path,
   // --- Rules: the game's logic, without code ---
 
   // The rule list, each one as the sentence it reads as.
+  // What the pitch is made of (stage 35). The page asks for the list rather
+  // than hard-coding one, and sets it by name — the same pairing the rule
+  // editor's dropdowns use.
+  if (path == "/api/surface") {
+    GameProfile& profile = editor.profileRef();
+    const std::string wanted = param(params, "name");
+    if (!wanted.empty()) {
+      SurfaceKind kind = SurfaceKind::Grass;
+      if (!surfaceFromName(wanted, kind)) return errorJson("no such surface");
+      profile.surface = kind;
+      // Rebuild so a material change is live immediately, without a restart.
+      editor.rebuildPhysicsForProfile();
+    }
+    const SurfaceTuning tuning = surfaceTuning(profile.surface);
+    std::string out = "{\"ok\":true,\"surface\":" + quoted(surfaceName(profile.surface));
+    out += ",\"grip\":" + number(tuning.grip) + ",\"bounce\":" + number(tuning.restitution);
+    out += ",\"surfaces\":[";
+    const SurfaceKind all[] = {SurfaceKind::Grass,  SurfaceKind::Asphalt, SurfaceKind::Concrete, SurfaceKind::Metal,
+                               SurfaceKind::Wood,   SurfaceKind::Rubber,  SurfaceKind::Sand};
+    for (usize i = 0U; i < sizeof(all) / sizeof(all[0]); ++i) {
+      if (i > 0U) out += ",";
+      out += quoted(surfaceName(all[i]));
+    }
+    return out + "]}";
+  }
+
   if (path == "/api/rules") {
     const LogicBook& book = editor.logic();
     std::string out = "{\"ok\":true,\"rules\":[";

@@ -264,9 +264,8 @@ void PhysicsWorld::collectContacts(std::vector<Contact>& contacts) const {
       ++tests;
       const f64 distance = sphere.position.y - sphere.radius - planePair.second.y;
       if (distance <= 0.0) {  // touching counts: resting bodies stay damped
-        contacts.push_back(
-            Contact{true, false, true, false, spherePair.first, planePair.first, Vec3{0.0, -1.0, 0.0},
-                    -distance, sphere.restitution});
+        contacts.push_back(Contact{true, false, true, true, false, spherePair.first, planePair.first, Vec3{0.0, -1.0, 0.0},
+                                   -distance, sphere.restitution * surface_.restitution});
       }
     }
   }
@@ -281,7 +280,7 @@ void PhysicsWorld::collectContacts(std::vector<Contact>& contacts) const {
       bool embedded = false;
       if (sphereBoxContact(sphere.position, sphere.radius, boxPair.second.center, boxPair.second.halfExtents,
                            normal, penetration, embedded)) {
-        contacts.push_back(Contact{true, false, true, embedded, spherePair.first, boxPair.first, normal,
+        contacts.push_back(Contact{true, false, true, false, embedded, spherePair.first, boxPair.first, normal,
                                    penetration, sphere.restitution});
       }
     }
@@ -315,7 +314,7 @@ void PhysicsWorld::collectContacts(std::vector<Contact>& contacts) const {
       penetration = radii - distance;
     }
     const f64 restitution = std::max(a->restitution, b->restitution);
-    contacts.push_back(Contact{true, true, false, false, idA, idB, normal, penetration, restitution});
+    contacts.push_back(Contact{true, true, false, false, false, idA, idB, normal, penetration, restitution});
   };
   if (candidateDriven) {
     for (const auto& pair : candidates_) {
@@ -339,9 +338,8 @@ void PhysicsWorld::collectContacts(std::vector<Contact>& contacts) const {
       ++tests;
       const f64 distance = box.position.y - box.halfExtents.y - planePair.second.y;
       if (distance <= 0.0) {  // touching counts: resting bodies stay damped
-        contacts.push_back(
-            Contact{false, false, true, false, boxPair.first, planePair.first, Vec3{0.0, -1.0, 0.0},
-                    -distance, box.restitution});
+        contacts.push_back(Contact{false, false, true, true, false, boxPair.first, planePair.first, Vec3{0.0, -1.0, 0.0},
+                                   -distance, box.restitution * surface_.restitution});
       }
     }
   }
@@ -356,7 +354,7 @@ void PhysicsWorld::collectContacts(std::vector<Contact>& contacts) const {
       if (boxBoxContact(box.position, box.halfExtents, staticPair.second.center, staticPair.second.halfExtents,
                         normal, penetration)) {
         contacts.push_back(
-            Contact{false, false, true, false, boxPair.first, staticPair.first, normal, penetration,
+            Contact{false, false, true, false, false, boxPair.first, staticPair.first, normal, penetration,
                     box.restitution});
       }
     }
@@ -371,7 +369,7 @@ void PhysicsWorld::collectContacts(std::vector<Contact>& contacts) const {
     f64 penetration = 0.0;
     if (!boxBoxContact(a->position, a->halfExtents, b->position, b->halfExtents, normal, penetration)) return;
     const f64 restitution = std::max(a->restitution, b->restitution);
-    contacts.push_back(Contact{false, false, false, false, idA, idB, normal, penetration, restitution});
+    contacts.push_back(Contact{false, false, false, false, false, idA, idB, normal, penetration, restitution});
   };
   if (candidateDriven) {
     for (const auto& pair : candidates_) {
@@ -402,7 +400,7 @@ void PhysicsWorld::collectContacts(std::vector<Contact>& contacts) const {
     }
     const f64 restitution = std::max(body->restitution, box->restitution);
     contacts.push_back(
-        Contact{true, false, false, embedded, sphereId, boxId, normal, penetration, restitution});
+        Contact{true, false, false, false, embedded, sphereId, boxId, normal, penetration, restitution});
   };
   if (candidateDriven) {
     for (const auto& pair : candidates_) {
@@ -504,7 +502,10 @@ f64 PhysicsWorld::gripFactor() const {
 }
 
 void PhysicsWorld::applyPairFriction(const Contact& contact) {
-  const f64 grip = gripFactor();
+  // Two independent multipliers, in this order: the weather (a wet pitch is
+  // slick) and the material (asphalt slips, rubber grabs). Grass is 1.0 for
+  // both, so a neutral world is unchanged to the bit.
+  const f64 grip = gripFactor() * (contact.ground ? surface_.grip : 1.0);
   if (contact.sphereA) {
     SphereBody* body = sphere(contact.idA);
     if (body != nullptr) {

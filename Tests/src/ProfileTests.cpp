@@ -396,6 +396,86 @@ KIMIA_TEST(profile_shipped_directory_loads_every_game_for_a_release) {
 
 // --- Stage 24: weather and the clock ---
 
+using kimia::EnvironmentKind;
+using kimia::SurfaceKind;
+using kimia::SurfaceTuning;
+
+KIMIA_TEST(profile_surface_materials_are_named_and_tuned_in_one_table) {
+  // The material table is content: names for the editor and numbers for the
+  // physics. This pins both, so a retune is a visible change and not a
+  // surprise in a save file.
+  const SurfaceKind all[] = {SurfaceKind::Grass,  SurfaceKind::Asphalt, SurfaceKind::Concrete,
+                             SurfaceKind::Metal,  SurfaceKind::Wood,    SurfaceKind::Rubber,
+                             SurfaceKind::Sand};
+  for (const SurfaceKind kind : all) {
+    SurfaceKind back = SurfaceKind::Grass;
+    KIMIA_REQUIRE(surfaceFromName(surfaceName(kind), back));
+    KIMIA_REQUIRE(back == kind);  // every name round-trips
+  }
+  SurfaceKind junk = SurfaceKind::Grass;
+  KIMIA_REQUIRE(!surfaceFromName("lava", junk));  // and nothing else parses
+
+  // Grass is the neutral material: {1.0, 1.0} exactly, which is the promise
+  // that a world that never asked for a material is unchanged.
+  const SurfaceTuning grass = surfaceTuning(SurfaceKind::Grass);
+  KIMIA_REQUIRE(grass.grip == 1.0);
+  KIMIA_REQUIRE(grass.restitution == 1.0);
+  // Every other material is a real change on at least one axis.
+  for (const SurfaceKind kind : all) {
+    if (kind == SurfaceKind::Grass) continue;
+    const SurfaceTuning tuning = surfaceTuning(kind);
+    KIMIA_REQUIRE(tuning.grip != 1.0 || tuning.restitution != 1.0);
+    KIMIA_REQUIRE(tuning.grip > 0.0 && tuning.restitution > 0.0);
+  }
+  // The shape of the table: a street is slick and hard, a sandlot is neither.
+  KIMIA_REQUIRE(surfaceTuning(SurfaceKind::Asphalt).grip < grass.grip);
+  KIMIA_REQUIRE(surfaceTuning(SurfaceKind::Asphalt).restitution > grass.restitution);
+  KIMIA_REQUIRE(surfaceTuning(SurfaceKind::Metal).restitution > surfaceTuning(SurfaceKind::Wood).restitution);
+  KIMIA_REQUIRE(surfaceTuning(SurfaceKind::Rubber).grip > grass.grip);
+  KIMIA_REQUIRE(surfaceTuning(SurfaceKind::Sand).grip > surfaceTuning(SurfaceKind::Rubber).grip);
+  KIMIA_REQUIRE(surfaceTuning(SurfaceKind::Sand).restitution < grass.restitution);
+
+  // Picking an environment picks the material that goes with it — but this is
+  // only what the editor does on a deliberate choice; the loader never does it.
+  KIMIA_REQUIRE(surfaceForEnvironment(EnvironmentKind::Asphalt) == SurfaceKind::Asphalt);
+  KIMIA_REQUIRE(surfaceForEnvironment(EnvironmentKind::Night) == SurfaceKind::Asphalt);
+  KIMIA_REQUIRE(surfaceForEnvironment(EnvironmentKind::Sand) == SurfaceKind::Sand);
+  KIMIA_REQUIRE(surfaceForEnvironment(EnvironmentKind::Grass) == SurfaceKind::Grass);
+}
+
+KIMIA_TEST(profile_surface_line_is_written_only_when_it_is_not_grass) {
+  // The compatibility rule the profile has followed since the match clock:
+  // a new key may not grow a file that never used it. A world on the neutral
+  // material saves exactly the bytes it saved before surfaces existed.
+  GameProfile neutral;
+  neutral.name = "x";
+  const std::string plainText = ProfileIO::save(neutral);
+  KIMIA_REQUIRE(plainText.find("surface") == std::string::npos);
+
+  neutral.surface = SurfaceKind::Asphalt;
+  const std::string streetText = ProfileIO::save(neutral);
+  KIMIA_REQUIRE(streetText.find("\nsurface asphalt\n") != std::string::npos);
+
+  // And it loads back, both ways.
+  GameProfile loaded;
+  std::string error;
+  KIMIA_REQUIRE(ProfileIO::load(streetText, loaded, error));
+  KIMIA_REQUIRE(loaded.surface == SurfaceKind::Asphalt);
+  KIMIA_REQUIRE(ProfileIO::load(plainText, loaded, error));
+  KIMIA_REQUIRE(loaded.surface == SurfaceKind::Grass);  // absent = neutral
+  // Re-saving what loaded gives the same bytes: the line's place in the file
+  // is stable, so a world does not churn every time it is saved.
+  KIMIA_REQUIRE(ProfileIO::save(loaded) == plainText);
+  GameProfile again;
+  KIMIA_REQUIRE(ProfileIO::load(streetText, again, error));
+  KIMIA_REQUIRE(ProfileIO::save(again) == streetText);
+  // An unknown material is ignored whole, like every other bad line in this
+  // loader (a half-written `weather` line behaves the same way): the world
+  // falls back to the neutral material rather than to nonsense.
+  KIMIA_REQUIRE(ProfileIO::load("# KIMIA profile v1\nname x\nsurface lava\n", again, error));
+  KIMIA_REQUIRE(again.surface == SurfaceKind::Grass);
+}
+
 KIMIA_TEST(profile_weather_and_time_round_trip_and_clamp) {
   GameProfile out;
   std::string error;

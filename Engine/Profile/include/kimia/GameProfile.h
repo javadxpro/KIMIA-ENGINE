@@ -13,6 +13,26 @@ enum class BallType { Accurate, Fantasy };
 // Ground/sky presets. Asphalt is the street-football surface.
 enum class EnvironmentKind { Grass, Sand, Night, Asphalt };
 
+// What the pitch is MADE of (stage 35). The environment above is what the pitch
+// LOOKS like; this is how it PLAYS. They are separate on purpose: a dark alley
+// can be painted asphalt and still play like a schoolyard, and the physics has
+// no opinion about colours.
+//
+// The numbers live here (content) and are handed to the physics as two
+// multipliers (mechanism) — see kimia::SurfaceMaterial in Physics.h. Grass is
+// {1.0, 1.0}: exactly the behaviour every world had before materials existed,
+// so nothing that does not ask for a material changes at all.
+enum class SurfaceKind { Grass, Asphalt, Concrete, Metal, Wood, Rubber, Sand };
+
+struct SurfaceTuning {
+  f64 grip = 1.0;         // ground friction multiplier: lower = the ball runs
+  f64 restitution = 1.0;  // bounce multiplier: higher = livelier ground
+};
+
+// Environment → the material that surface usually is. Used when someone PICKS
+// an environment in the editor, never applied silently on load.
+SurfaceKind surfaceForEnvironment(EnvironmentKind environment);
+
 // How the player plays the ball.
 //   Kick: a running character; walking into the ball kicks it (football).
 //   Shot: no runner — aim with the arrows, hold «شوت» to charge, release to
@@ -157,6 +177,11 @@ struct GameProfile {
   // How quickly a sprinting player tires, 0 = never (the endless runner
   // every game had until now).
   f64 stamina = 0.0;
+  // What the pitch is made of (stage 35). Grass = the neutral material, so a
+  // profile that never sets this plays exactly as it did before surfaces
+  // existed. `surface asphalt` in a profile file, or the editor's environment
+  // picker, changes how the ball rolls and bounces.
+  SurfaceKind surface = SurfaceKind::Grass;
   // Arena mode (stage 30). Off everywhere except battleground: this turns
   // the football pitch into a third-person shooter. The engine provides
   // the weapon, the profile only supplies numbers — no pay-to-win, because
@@ -181,6 +206,9 @@ const char* ballTypeName(BallType type);  // "accurate" / "fantasy"
 bool ballTypeFromName(const std::string& name, BallType& out);
 const char* environmentName(EnvironmentKind kind);  // "grass" / "sand" / "night" / "asphalt"
 bool environmentFromName(const std::string& name, EnvironmentKind& out);
+const char* surfaceName(SurfaceKind kind);  // "grass" / "asphalt" / ...
+bool surfaceFromName(const std::string& name, SurfaceKind& out);
+SurfaceTuning surfaceTuning(SurfaceKind kind);
 const char* playModeName(PlayMode mode);  // "kick" / "shot"
 bool playModeFromName(const std::string& name, PlayMode& out);
 const char* cameraStyleName(CameraStyle style);  // "orbit" / "chase" / "broadcast"

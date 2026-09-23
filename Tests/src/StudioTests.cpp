@@ -1307,6 +1307,36 @@ KIMIA_TEST(studio_control_targets_one_character_and_survives_serialization) {
   KIMIA_REQUIRE(control->target == second);
 }
 
+KIMIA_TEST(studio_surface_endpoint_lists_and_sets_the_pitch_material) {
+  // The material is content the editor has to be able to change at runtime —
+  // a dropdown that cannot be set is a screenshot, not a feature.
+  WorldEditor editor;
+  streetWorld(editor);
+  const std::string initial = ask(editor, "/api/surface");
+  KIMIA_REQUIRE(has(initial, "\"surface\":\"grass\""));
+  KIMIA_REQUIRE(has(initial, "\"grip\":1.000000"));
+  // The list comes from the engine, so the page never hard-codes it.
+  for (const char* name : {"grass", "asphalt", "concrete", "metal", "wood", "rubber", "sand"}) {
+    KIMIA_REQUIRE(has(initial, std::string("\"") + name + "\""));
+  }
+  const std::string set = ask(editor, "/api/surface", {{"name", "asphalt"}});
+  KIMIA_REQUIRE(has(set, "\"surface\":\"asphalt\""));
+  KIMIA_REQUIRE(has(set, "\"grip\":0.620000"));
+  KIMIA_REQUIRE(editor.profile().surface == kimia::SurfaceKind::Asphalt);
+  // It reaches the physics without a restart: the world's ground material is
+  // the one the profile names.
+  KIMIA_REQUIRE(editor.physicsSurfaceMaterial().grip < 1.0);
+  const std::string again = ask(editor, "/api/surface");
+  KIMIA_REQUIRE(has(again, "\"surface\":\"asphalt\""));
+  // A name that is not a material is refused, and changes nothing.
+  const std::string bad = ask(editor, "/api/surface", {{"name", "lava"}});
+  KIMIA_REQUIRE(has(bad, "\"error\""));
+  KIMIA_REQUIRE(editor.profile().surface == kimia::SurfaceKind::Asphalt);
+  // Back to the neutral material.
+  ask(editor, "/api/surface", {{"name", "grass"}});
+  KIMIA_REQUIRE(editor.physicsSurfaceMaterial().grip == 1.0);
+}
+
 KIMIA_TEST(studio_bone_endpoint_returns_local_and_world_xz) {
   WorldEditor editor;
   streetWorld(editor);

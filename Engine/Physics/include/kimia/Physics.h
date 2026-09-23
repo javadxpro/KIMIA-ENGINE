@@ -199,6 +199,31 @@ inline constexpr usize kBroadPhaseMinBodies = 16U;
 // matching WorldEditor::aimYaw). The speed is clamped to [0, kMaxWind...].
 Wind makeWind(f64 speed, f64 direction);
 
+// --- Surface material (phase 4) ---
+//
+// What the ground is MADE of, as far as the simulation is concerned: two
+// multipliers over the body's own friction and restitution.
+//
+//   grip         scales how hard the ground holds a ball (asphalt 0.6 = a ball
+//                rolls much further on it than on grass; sand 2.6 = it dies).
+//   restitution  scales the bounce off the ground (metal 1.45 = lively,
+//                sand 0.55 = a thud).
+//
+// The default is exactly {1.0, 1.0}: a world that never sets a material is
+// bit-for-bit the world this engine had before materials existed, and the
+// multipliers themselves are the only place the material shows up — the
+// per-body friction and restitution keep owning everything else (so a heavy
+// crate still lands hard on grass).
+//
+// Content names the material (grass / asphalt / concrete / metal / wood /
+// rubber / sand) — see GameProfile.h — and hands the numbers down here through
+// setSurfaceMaterial, so Physics stays free of game nouns and Profile stays
+// free of physics.
+struct SurfaceMaterial {
+  f64 grip = 1.0;
+  f64 restitution = 1.0;
+};
+
 // Fixed-timestep physics world: dynamic spheres and dynamic boxes vs static
 // planes and AABBs, plus dynamic-vs-dynamic pairs (sphere-sphere, sphere-box,
 // box-box). Fixed dt = 1/120 s; host-rate advance() uses an accumulator with
@@ -275,6 +300,10 @@ public:
   // further but never slides for ever. Dry (the default) is bit-identical
   // to the engine before this existed.
   void setWetness(f64 wetness);
+  // The material the ground is made of. Two multipliers, see SurfaceMaterial:
+  // the default {1.0, 1.0} is the pre-material behaviour exactly.
+  void setSurfaceMaterial(const SurfaceMaterial& material) { surface_ = material; }
+  const SurfaceMaterial& surfaceMaterial() const { return surface_; }
   f64 wetness() const { return wetness_; }
   // The multiplier wetness applies to contact friction: 1 when dry.
   f64 gripFactor() const;
@@ -350,7 +379,10 @@ private:
     bool sphereA = false;  // A is a dynamic sphere (else a dynamic box)
     bool sphereB = false;  // B is a dynamic sphere; false = dynamic box
     bool staticB = false;  // B is a static plane or box (A is never static)
+    bool ground = false;   // B is the ground plane, so the surface material applies
     bool embedded = false; // sphere center inside a box: position-only fix
+    // NOTE: collectContacts builds these positionally. The order above — and
+    // `ground` sitting before `embedded` — is what the literals there assume.
     u32 idA = 0U;
     u32 idB = 0U;
     Vec3 normal{0.0, 0.0, 0.0};  // points from A toward B
@@ -394,6 +426,7 @@ private:
   u32 nextCharacterId_ = kPrimaryCharacter;
   Wind wind_;
   f64 wetness_ = 0.0;
+  SurfaceMaterial surface_;
   u32 nextId_ = 1U;
   f64 time_ = 0.0;
   u64 steps_ = 0U;

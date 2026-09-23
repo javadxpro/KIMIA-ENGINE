@@ -407,6 +407,22 @@ KIMIA_TEST(world_add_environment_updates_colors) {
   editor.choose(2);
   editor.choose(0);  // چمن‌زار
   KIMIA_REQUIRE(near3(ground->color, kimia::environmentColors(EnvironmentKind::Grass).floor));
+  // Picking an environment also picks the material that goes with it (stage
+  // 35), so the choice is not just a colour: choosing the street makes the
+  // pitch play like a street.
+  KIMIA_REQUIRE(editor.profile().surface == kimia::SurfaceKind::Grass);
+  editor.choose(2);  // محیط
+  editor.choose(3);  // آسفالت (خیابان)
+  KIMIA_REQUIRE(editor.profile().surface == kimia::SurfaceKind::Asphalt);
+  // And it reaches the physics at play time, not only in the profile.
+  editor.choose(3);  // PLAY
+  KIMIA_REQUIRE(editor.physicsSurfaceMaterial().grip < 1.0);
+  editor.backToMenu();
+  editor.choose(2);
+  editor.choose(1);  // شنی (کویر)
+  KIMIA_REQUIRE(editor.profile().surface == kimia::SurfaceKind::Sand);
+  editor.choose(3);  // PLAY
+  KIMIA_REQUIRE(editor.physicsSurfaceMaterial().grip > 1.0);
 }
 
 KIMIA_TEST(world_save_load_roundtrip_keeps_objects) {
@@ -4201,6 +4217,64 @@ KIMIA_TEST(world_the_boards_bounce_the_ball_back_into_play) {
   KIMIA_REQUIRE(editor.ballVelocity().z < 0.0); // off the boards, back in
   for (i32 i = 0; i < 10; ++i) editor.update(1.0 / 60.0);
   KIMIA_REQUIRE(editor.ballPosition().z < bound - 0.05);
+}
+
+KIMIA_TEST(world_the_pitch_material_changes_where_the_ball_stops) {
+  // End to end: profile → physics → a pass that goes somewhere else. Same
+  // editor, same kick, only the material differs, so this cannot pass by
+  // accident of some other tuning.
+  const auto rollOn = [](kimia::SurfaceKind kind) {
+    WorldEditor editor = editorWithWorld();  // street, rules off, no players
+    addBall(editor, 0, Vec3{0.0, 0.0, 0.0});
+    exitPlace(editor);
+    editor.profileRef().surface = kind;
+    editor.choose(3);  // PLAY — this rebuilds the physics from the profile
+    KIMIA_REQUIRE(editor.playing());
+    editor.setPlayerPosition(Vec3{0.0, 0.5, -6.0});  // out of the way
+    editor.setBallPosition(Vec3{0.0, editor.world().ball.radius, 6.0});
+    editor.setBallVelocity(Vec3{0.0, 0.0, -6.0});
+    for (i32 i = 0; i < 120; ++i) editor.update(1.0 / 60.0);  // two seconds
+    return editor.ballPosition().z;  // further from the kick = less travelled
+  };
+  const kimia::SurfaceKind grass = kimia::SurfaceKind::Grass;
+  const kimia::SurfaceKind asphalt = kimia::SurfaceKind::Asphalt;
+  const f64 onGrass = rollOn(grass);
+  const f64 onAsphalt = rollOn(asphalt);
+  KIMIA_REQUIRE(onAsphalt < onGrass - 0.5);  // the street ball runs further
+}
+
+KIMIA_TEST(world_the_material_survives_a_save_and_load_round_trip) {
+  WorldEditor editor = editorWithWorld();
+  exitPlace(editor);
+  editor.profileRef().surface = kimia::SurfaceKind::Rubber;
+  const std::string path = tmpPath("surface.kimia");
+  std::string error;
+  KIMIA_REQUIRE(editor.saveWorld(path, error));
+  {
+    // The file has to SAY it, or a world would change material by being
+    // opened somewhere else.
+    std::ifstream file(path);
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    KIMIA_REQUIRE(buffer.str().find("surface rubber") != std::string::npos);
+  }
+  WorldEditor reopened;
+  KIMIA_REQUIRE(reopened.loadWorld(path, error));
+  KIMIA_REQUIRE(reopened.profile().surface == kimia::SurfaceKind::Rubber);
+  // And a world on the neutral material writes no line at all, which is what
+  // keeps every world made before materials existed byte-identical.
+  WorldEditor plain = editorWithWorld();
+  exitPlace(plain);
+  const std::string plainPath = tmpPath("surface_neutral.kimia");
+  KIMIA_REQUIRE(plain.saveWorld(plainPath, error));
+  {
+    std::ifstream file(plainPath);
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    KIMIA_REQUIRE(buffer.str().find("surface") == std::string::npos);
+  }
+  std::remove(path.c_str());
+  std::remove(plainPath.c_str());
 }
 
 KIMIA_TEST(world_boards_alone_keep_the_ball_moving) {

@@ -118,6 +118,8 @@ std::string WorldEditor::assetPath(const std::string& file) const {
   return resolved.empty() ? file : resolved;
 }
 
+void WorldEditor::rebuildPhysicsForProfile() { rebuildPhysics(); }
+
 void WorldEditor::rebuildPhysics() {
   physics_.clear();
   physics_.addPlane(0.0);
@@ -127,6 +129,11 @@ void WorldEditor::rebuildPhysics() {
   // Weather (stage 24): rain soaks the pitch, so the surface is as slick as
   // the wetter of «how wet the profile says it is» and «how hard it rains».
   physics_.setWetness(pitchWetness());
+  // What the pitch is made of (stage 35). Content names it and supplies the
+  // numbers; physics only multiplies them into the ground contact. Grass is
+  // {1.0, 1.0}, so a world that never asked for a material is unchanged.
+  const SurfaceTuning tuning = surfaceTuning(world_.profile.surface);
+  physics_.setSurfaceMaterial(SurfaceMaterial{tuning.grip, tuning.restitution});
   crateIds_.clear();
   crateBodyIds_.clear();
   std::map<std::string, GoalGroup> goals;

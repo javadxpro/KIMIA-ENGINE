@@ -83,6 +83,96 @@ const char* environmentName(EnvironmentKind kind) {
   }
 }
 
+// --- Surface materials (stage 35) ---
+//
+// Real-world order of magnitude, as multipliers over the per-body numbers:
+//
+//   material   grip  bounce   what it plays like
+//   grass      1.00    1.00   the neutral pitch: everything before this existed
+//   asphalt    0.62    1.18   hard and slick — the ball runs, a street cage
+//   concrete   0.55    1.25   harder still, no give at all
+//   metal      0.40    1.45   a drain cover: least grip, most bounce
+//   wood       0.80    1.10   a boarded floor: a little slicker than grass
+//   rubber    1.55    1.30   a court: grabs AND bounces
+//   sand       2.60    0.55   the ball dies in it
+//
+// Wetness multiplies on top (a wet pitch is slicker than the same pitch dry),
+// so `weather 0 0.6` on asphalt is slicker than asphalt, and on sand it is
+// still sand.
+const char* surfaceName(SurfaceKind kind) {
+  switch (kind) {
+    case SurfaceKind::Asphalt:
+      return "asphalt";
+    case SurfaceKind::Concrete:
+      return "concrete";
+    case SurfaceKind::Metal:
+      return "metal";
+    case SurfaceKind::Wood:
+      return "wood";
+    case SurfaceKind::Rubber:
+      return "rubber";
+    case SurfaceKind::Sand:
+      return "sand";
+    case SurfaceKind::Grass:
+    default:
+      return "grass";
+  }
+}
+
+bool surfaceFromName(const std::string& name, SurfaceKind& out) {
+  if (name == "grass") {
+    out = SurfaceKind::Grass;
+  } else if (name == "asphalt") {
+    out = SurfaceKind::Asphalt;
+  } else if (name == "concrete") {
+    out = SurfaceKind::Concrete;
+  } else if (name == "metal") {
+    out = SurfaceKind::Metal;
+  } else if (name == "wood") {
+    out = SurfaceKind::Wood;
+  } else if (name == "rubber") {
+    out = SurfaceKind::Rubber;
+  } else if (name == "sand") {
+    out = SurfaceKind::Sand;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+SurfaceTuning surfaceTuning(SurfaceKind kind) {
+  switch (kind) {
+    case SurfaceKind::Asphalt:
+      return SurfaceTuning{0.62, 1.18};
+    case SurfaceKind::Concrete:
+      return SurfaceTuning{0.55, 1.25};
+    case SurfaceKind::Metal:
+      return SurfaceTuning{0.40, 1.45};
+    case SurfaceKind::Wood:
+      return SurfaceTuning{0.80, 1.10};
+    case SurfaceKind::Rubber:
+      return SurfaceTuning{1.55, 1.30};
+    case SurfaceKind::Sand:
+      return SurfaceTuning{2.60, 0.55};
+    case SurfaceKind::Grass:
+    default:
+      return SurfaceTuning{1.0, 1.0};  // the neutral material
+  }
+}
+
+SurfaceKind surfaceForEnvironment(EnvironmentKind environment) {
+  switch (environment) {
+    case EnvironmentKind::Asphalt:
+    case EnvironmentKind::Night:
+      return SurfaceKind::Asphalt;
+    case EnvironmentKind::Sand:
+      return SurfaceKind::Sand;
+    case EnvironmentKind::Grass:
+    default:
+      return SurfaceKind::Grass;
+  }
+}
+
 bool environmentFromName(const std::string& name, EnvironmentKind& out) {
   if (name == "grass") {
     out = EnvironmentKind::Grass;
@@ -327,6 +417,12 @@ std::vector<std::string> ProfileIO::lines(const GameProfile& profile) {
   out.push_back("weapon " + std::to_string(profile.health) + ' ' + std::to_string(profile.magazine) + ' ' +
                 formatFixed6(profile.fireRate) + ' ' + std::to_string(profile.damage) + ' ' +
                 formatFixed6(profile.range) + ' ' + formatFixed6(profile.reloadTime));
+  // Written only when it is NOT the neutral material, so the file of a world
+  // that never asked for one keeps exactly the bytes it had (the same rule the
+  // match score and the personal best follow).
+  if (profile.surface != SurfaceKind::Grass) {
+    out.push_back(std::string("surface ") + surfaceName(profile.surface));
+  }
   return out;
 }
 
@@ -357,6 +453,13 @@ bool ProfileIO::parseLine(const std::string& rawLine, GameProfile& out) {
     if (!(tokens >> a >> b) || !parseF64Token(a, length) || !parseF64Token(b, width)) return false;
     out.fieldLength = clampF64(length, kProfileFieldMin, kProfileFieldMax);
     out.fieldWidth = clampF64(width, kProfileFieldMin, kProfileFieldMax);
+    return true;
+  }
+  if (key == "surface") {
+    std::string value;
+    SurfaceKind kind = SurfaceKind::Grass;
+    if (!(tokens >> value) || !surfaceFromName(value, kind)) return false;
+    out.surface = kind;
     return true;
   }
   if (key == "environment") {

@@ -1090,7 +1090,14 @@ void WorldEditor::choose(i32 optionIndex) {
       } else if (optionIndex == 3) {
         world_.environment = EnvironmentKind::Asphalt;
       }
-      if (optionIndex <= 3) applyEnvironmentToScene();
+      if (optionIndex <= 3) {
+        // The environment is what the pitch looks like; picking one also picks
+        // the material that usually goes with it (asphalt street, sandlot,
+        // grass field). Only here, on a deliberate choice — never on load, so
+        // a world saved before materials existed plays exactly as it did.
+        world_.profile.surface = surfaceForEnvironment(world_.environment);
+        applyEnvironmentToScene();
+      }
       screen_ = Screen::Builder;
       break;
     }

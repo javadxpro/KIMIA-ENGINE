@@ -1001,6 +1001,16 @@ public:
   enum class Stoppage { None, ThrowIn, GoalKick, Offside, Foul };
 
   bool rulesEnabled() const { return world_.profile.rules; }
+  // The live profile of the open world, so an editor panel can retune it (the
+  // surface material, for one). The caller is expected to call
+  // rebuildPhysicsForProfile() when it changes something the physics reads.
+  GameProfile& profileRef() { return world_.profile; }
+  // Re-apply the profile to the physics world (material, wind, wetness). Safe
+  // to call whenever: it only rebuilds the physics bodies, not the scene.
+  void rebuildPhysicsForProfile();
+  // Read-only view of the material the physics is playing on, so a panel (and
+  // a test) can check that what the profile says is what the pitch does.
+  const SurfaceMaterial& physicsSurfaceMaterial() const { return physics_.surfaceMaterial(); }
   // Is there a goal at this end of the pitch? The scene says so, and the AI
   // has to know: a side that shoots "at the net" on a pitch that has no net is
   // shooting at the boards, and a ball pinned against the boards by a repeated
