@@ -490,6 +490,154 @@ void PhysicsWorld::resolvePair(const Contact& contact, bool countContacts) {
   }
 }
 
+// --- Continuous collision for fast spheres (phase 4) ---
+
+namespace {
+
+// Slab test of the segment `from` + t*`delta` against the box `center`/`half`
+// grown by the sphere radius (the Minkowski sum: exact on the faces, a little
+// conservative at the corners — which is the safe direction. It can stop a ball
+// early near an edge; it can never let one through).
+bool sweepSegmentBox(const Vec3& from, const Vec3& delta, const Vec3& center, const Vec3& half, f64 radius, f64& time,
+                     Vec3& normal) {
+  const Vec3 grow{half.x + radius, half.y + radius, half.z + radius};
+  const Vec3 low = center - grow;
+  const Vec3 high = center + grow;
+  const f64 origin[3] = {from.x, from.y, from.z};
+  const f64 move[3] = {delta.x, delta.y, delta.z};
+  const f64 boundsLow[3] = {low.x, low.y, low.z};
+  const f64 boundsHigh[3] = {high.x, high.y, high.z};
+
+  f64 tNear = 0.0;
+  f64 tFar = 1.0;
+  i32 axis = -1;
+  f64 entrySign = 0.0;
+  for (i32 i = 0; i < 3; ++i) {
+    if (std::abs(move[i]) <= kEpsilon) {
+      if (origin[i] < boundsLow[i] || origin[i] > boundsHigh[i]) return false;  // never inside this slab
+      continue;
+    }
+    const f64 inverse = 1.0 / move[i];
+    f64 t0 = (boundsLow[i] - origin[i]) * inverse;
+    f64 t1 = (boundsHigh[i] - origin[i]) * inverse;
+    f64 sign = -1.0;  // arriving at the low face of this axis
+    if (t0 > t1) {
+      const f64 swap = t0;
+      t0 = t1;
+      t1 = swap;
+      sign = 1.0;
+    }
+    if (t0 > tNear) {
+      tNear = t0;
+      axis = i;
+      entrySign = sign;
+    }
+    tFar = std::min(tFar, t1);
+    if (tNear > tFar) return false;
+  }
+  if (axis < 0 || tNear < 0.0 || tNear > 1.0) return false;  // no entry inside this step
+  time = tNear;
+  normal = Vec3{0.0, 0.0, 0.0};
+  if (axis == 0) normal.x = entrySign;
+  if (axis == 1) normal.y = entrySign;
+  if (axis == 2) normal.z = entrySign;
+  return true;
+}
+
+}  // namespace
+
+bool PhysicsWorld::sweepSpherePlane(const Vec3& from, const Vec3& delta, f64 radius, f64& time, Vec3& normal) const {
+  if (delta.y >= -kEpsilon) return false;  // not descending onto the ground
+  for (const auto& planePair : planes_) {
+    const f64 surface = planePair.second.y + radius;
+    if (from.y <= surface) continue;  // already touching it: the discrete solver owns this
+    const f64 t = (surface - from.y) / delta.y;
+    if (t < 0.0 || t > 1.0) continue;
+    time = t;
+    normal = Vec3{0.0, 1.0, 0.0};
+    return true;
+  }
+  return false;
+}
+
+bool PhysicsWorld::sweepSphereBoxes(const Vec3& from, const Vec3& delta, f64 radius, f64& time, Vec3& normal) const {
+  bool found = false;
+  const auto consider = [&](const Vec3& center, const Vec3& half) {
+    f64 t = 0.0;
+    Vec3 n{0.0, 0.0, 0.0};
+    if (sweepSegmentBox(from, delta, center, half, radius, t, n) && (!found || t < time)) {
+      time = t;
+      normal = n;
+      found = true;
+    }
+  };
+  for (const auto& boxPair : boxes_) consider(boxPair.second.center, boxPair.second.halfExtents);
+  // Dynamic bodies are swept at their position when the step began. A crate can
+  // still be pushed into a resting ball by the discrete solver; what this
+  // prevents is a shot going THROUGH a crate, which is the same tunnelling bug
+  // as a shot through a post.
+  for (const auto& boxPair : dynamicBoxes_) consider(boxPair.second.position, boxPair.second.halfExtents);
+  return found;
+}
+
+u32 PhysicsWorld::moveSphereContinuous(SphereBody& body) {
+  const Vec3 delta = body.velocity * fixedDt_;
+  if (!ccd_ || delta.length() <= kCcdTriggerFraction * body.radius) {
+    body.position += delta;  // the discrete path, bit for bit as before
+    return 0U;
+  }
+  ++stats_.ccdSweeps;
+  u32 hits = 0U;
+  Vec3 from = body.position;
+  f64 used = 0.0;  // fraction of this step already spent
+  for (u32 bounce = 0U; bounce < kCcdMaxHits; ++bounce) {
+    // Whatever is left of the step, at the velocity the ball has NOW — a bounce
+    // reverses part of it, so the remainder has to be recomputed rather than
+    // reused (reusing it drove the ball back INTO the post it had just hit).
+    const Vec3 remaining = body.velocity * (fixedDt_ * (1.0 - used));
+    if (remaining.length() <= kEpsilon) break;
+    f64 time = 2.0;
+    Vec3 normal{0.0, 0.0, 0.0};
+    bool hit = sweepSphereBoxes(from, remaining, body.radius, time, normal);
+    bool ground = false;
+    f64 planeTime = 2.0;
+    Vec3 planeNormal{0.0, 0.0, 0.0};
+    if (sweepSpherePlane(from, remaining, body.radius, planeTime, planeNormal) && planeTime < time) {
+      time = planeTime;
+      normal = planeNormal;
+      hit = true;
+      ground = true;
+    }
+    if (!hit) {
+      from += remaining;  // nothing in the way: the rest of the step is free
+      used = 1.0;
+      break;
+    }
+    // Park the ball on the surface it hit, reflect the normal component of the
+    // velocity (restitution applies exactly as it does in the contact solver),
+    // and carry on with the remaining time. Tangential friction stays the
+    // ordinary contact pass's business, so a fast shot and a slow roll are
+    // damped by the same code.
+    from += remaining * time - normal * kCcdEpsilon;
+    used += time * (1.0 - used);
+    const f64 approach = kimia::dot(body.velocity, normal);
+    if (approach < 0.0) {
+      const f64 restitution =
+          approach <= -kContactRestitutionThreshold ? body.restitution * (ground ? surface_.restitution : 1.0) : 0.0;
+      body.velocity -= normal * ((1.0 + restitution) * approach);
+    }
+    ++hits;
+    // Out of impacts for this step: the time that is left is spent in the next
+    // one. Documented rather than hidden — three impacts in 1/120 s is a
+    // contrived scene, and dropping the remainder cannot put a ball through
+    // anything: the position is always on a surface.
+    if (bounce + 1U >= kCcdMaxHits) used = 1.0;
+  }
+  body.position = from;
+  stats_.ccdHits += hits;
+  return hits;
+}
+
 void PhysicsWorld::setWetness(f64 wetness) {
   wetness_ = wetness < 0.0 ? 0.0 : (wetness > 1.0 ? 1.0 : wetness);
 }
@@ -641,7 +789,7 @@ void PhysicsWorld::step() {
         }
       }
     }
-    body.position += body.velocity * fixedDt_;
+    moveSphereContinuous(body);
   }
   for (auto& boxPair : dynamicBoxes_) {
     DynamicBox& body = boxPair.second;

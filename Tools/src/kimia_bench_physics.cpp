@@ -16,9 +16,10 @@
 // pin the PROPERTIES instead — bit-identical results with and without the grid,
 // and at least an order of magnitude fewer pair tests at 100 bodies.
 //
-// Usage: kimia_bench_physics [steps] [--linear]
+// Usage: kimia_bench_physics [steps] [--linear] [--no-ccd]
 //   steps    fixed steps per scene (default 120 = one second of simulation)
 //   --linear run the all-pairs path too (slow: it is the thing being replaced)
+//   --no-ccd run the discrete (no sweep) sphere integration, to price the CCD
 #include <kimia/Physics.h>
 #include <kimia/Types.h>
 
@@ -113,14 +114,15 @@ Result measure(PhysicsWorld& world, u32 steps) {
   return result;
 }
 
-void printScene(const Scene& scene, u32 steps, bool linear) {
-  std::printf("\n%s  (%zu spheres + %zu crates = %zu dynamic bodies)\n", scene.name.c_str(),
-              scene.spheres, scene.boxes, scene.spheres + scene.boxes);
+void printScene(const Scene& scene, u32 steps, bool linear, bool ccd) {
+  std::printf("\n%s  (%zu spheres + %zu crates = %zu dynamic bodies, ccd %s)\n", scene.name.c_str(), scene.spheres,
+              scene.boxes, scene.spheres + scene.boxes, ccd ? "on" : "off");
   std::printf("  %-9s %12s %16s %16s %14s\n", "path", "ms/step", "pairs/step", "candidates/step",
               "all-pairs");
 
   PhysicsWorld grid = build(scene);
   grid.setBroadPhaseEnabled(true);
+  grid.setCcdEnabled(ccd);
   const Result withGrid = measure(grid, steps);
   std::printf("  %-9s %12.3f %16.0f %16.0f %14.0f\n", "sweep", withGrid.msPerStep,
               withGrid.pairTestsPerStep, withGrid.candidatePairsPerStep, withGrid.allPairsPerCollect);
@@ -128,6 +130,7 @@ void printScene(const Scene& scene, u32 steps, bool linear) {
   if (linear) {
     PhysicsWorld plain = build(scene);
     plain.setBroadPhaseEnabled(false);
+    plain.setCcdEnabled(ccd);
     const Result without = measure(plain, steps);
     std::printf("  %-9s %12.3f %16.0f %16s %14.0f\n", "all-pairs", without.msPerStep,
                 without.pairTestsPerStep, "-", without.allPairsPerCollect);
@@ -144,10 +147,15 @@ void printScene(const Scene& scene, u32 steps, bool linear) {
 int main(int argc, char** argv) {
   u32 steps = 120U;  // one second of simulation at the fixed 120 Hz step
   bool linear = false;
+  bool ccd = true;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--linear") {
       linear = true;
+      continue;
+    }
+    if (arg == "--no-ccd") {
+      ccd = false;
       continue;
     }
     steps = static_cast<u32>(std::max(1, std::atoi(arg.c_str())));
@@ -163,11 +171,11 @@ int main(int argc, char** argv) {
   const Scene pile100{"pile: 100 crates stacked in the middle", 0U, 100U, 4.0, 1.01};
   const Scene mixed1000{"pitch: 1000 bodies, half of them in a pile", 500U, 500U, 40.0, 1.01};
 
-  printScene(loose10, steps, true);
-  printScene(loose100, steps, true);
-  printScene(loose1000, steps, linear);
-  printScene(pile100, steps, true);
-  printScene(mixed1000, steps, linear);
+  printScene(loose10, steps, true, ccd);
+  printScene(loose100, steps, true, ccd);
+  printScene(loose1000, steps, linear, ccd);
+  printScene(pile100, steps, true, ccd);
+  printScene(mixed1000, steps, linear, ccd);
   std::printf("\n");
   return 0;
 }

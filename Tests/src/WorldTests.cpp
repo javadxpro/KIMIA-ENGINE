@@ -4219,6 +4219,46 @@ KIMIA_TEST(world_the_boards_bounce_the_ball_back_into_play) {
   KIMIA_REQUIRE(editor.ballPosition().z < bound - 0.05);
 }
 
+KIMIA_TEST(world_a_shot_off_the_post_does_not_sneak_in_through_the_wood) {
+  // End to end CCD: a hard shot fired at the post must come back off it instead
+  // of appearing inside the goal. The post is 12 cm of a real goal entity, and
+  // at this speed the ball crosses most of a metre per physics step — which is
+  // exactly the shot that used to be decided by where the step boundary fell.
+  WorldEditor editor = editorWithWorld();
+  addGoal(editor, 1, Vec3{0.0, 0.0, -7.5});
+  exitPlace(editor);
+  addBall(editor, 0, Vec3{0.0, 0.0, 0.0});
+  exitPlace(editor);
+  editor.choose(3);  // PLAY
+  KIMIA_REQUIRE(editor.playing());
+  KIMIA_REQUIRE(editor.goalCount() == 1U);
+  const u32 scoreBefore = editor.score();
+  // The placed goal is kWorldGoalMedium wide, so its post stands half that from
+  // the centre line. Aim straight at the post, from close range, at a speed the
+  // discrete step cannot follow.
+  const f64 postX = kimia::kWorldGoalMedium * 0.5 - 0.06;
+  editor.setPlayerPosition(Vec3{0.0, 0.5, 0.0});
+  // -3.75 is not an accident: at 60 m/s the ball advances half a metre per
+  // physics step, so the samples fall at -4.25, -4.75, ... -7.25, -7.75 and
+  // every one of them MISSES the 12 cm post. Without the sweep the shot goes
+  // through the wood and into the net — which is the bug, measured.
+  editor.setBallPosition(Vec3{postX, editor.world().ball.radius, -3.75});
+  editor.setBallVelocity(Vec3{0.0, 0.0, -60.0});
+  for (i32 i = 0; i < 90; ++i) editor.update(1.0 / 60.0);
+  KIMIA_REQUIRE(editor.score() == scoreBefore);  // no goal through the post
+  KIMIA_REQUIRE(editor.ballPosition().z > -7.5); // the ball stayed in front of the line
+
+  // Measured, not assumed: the same shot with the sweep switched off goes
+  // through the post and counts. This is what the sweep is buying, and it is
+  // the reason the default is on.
+  KIMIA_REQUIRE(editor.physicsCcdEnabled());
+  editor.setPhysicsCcdEnabled(false);
+  editor.setBallPosition(Vec3{postX, editor.world().ball.radius, -3.75});
+  editor.setBallVelocity(Vec3{0.0, 0.0, -60.0});
+  for (i32 i = 0; i < 90; ++i) editor.update(1.0 / 60.0);
+  KIMIA_REQUIRE(editor.score() > scoreBefore);  // straight through the wood
+}
+
 KIMIA_TEST(world_the_pitch_material_changes_where_the_ball_stops) {
   // End to end: profile → physics → a pass that goes somewhere else. Same
   // editor, same kick, only the material differs, so this cannot pass by

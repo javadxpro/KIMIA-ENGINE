@@ -224,6 +224,31 @@ struct SurfaceMaterial {
   f64 restitution = 1.0;
 };
 
+// --- Continuous collision for fast spheres (phase 4) ---
+//
+// The fixed step is 1/120 s, so a ball at 30 m/s advances 25 cm per step. A goal
+// post is 12 cm thick and a character is 60 cm wide: without a sweep, whether a
+// shot hits the wood or passes straight through it comes down to WHERE the step
+// boundaries happen to fall — the same shot scores or hits the post depending on
+// the phase of the frame counter, which is the kind of bug that looks like
+// random luck and is impossible to report honestly.
+//
+// So a sphere moving further than kCcdTriggerFraction * its radius in one step
+// is swept: the segment it would travel is tested against every static box, every
+// dynamic box (at its position when the step began) and the ground plane, and the
+// earliest impact becomes the end of the movement, with the normal component of
+// the velocity reflected. Up to kCcdMaxHits impacts are resolved per step, so a
+// shot can hit the post and then the ground inside the same frame.
+//
+// Below the trigger the old discrete path runs unchanged, bit for bit, which is
+// what keeps every slow world — and every existing test — where it was.
+inline constexpr f64 kCcdTriggerFraction = 0.5;
+inline constexpr u32 kCcdMaxHits = 3;
+// How far off the surface the ball is parked after a sweep. Big enough that the
+// discrete solver does not immediately re-resolve the same impact, small enough
+// that nobody can see it.
+inline constexpr f64 kCcdEpsilon = 1e-4;
+
 // Fixed-timestep physics world: dynamic spheres and dynamic boxes vs static
 // planes and AABBs, plus dynamic-vs-dynamic pairs (sphere-sphere, sphere-box,
 // box-box). Fixed dt = 1/120 s; host-rate advance() uses an accumulator with
@@ -300,6 +325,11 @@ public:
   // further but never slides for ever. Dry (the default) is bit-identical
   // to the engine before this existed.
   void setWetness(f64 wetness);
+  // Continuous collision for fast spheres, on by default (see kCcdTriggerFraction
+  // for why). Off, the world is the discrete one it used to be — which is what
+  // the CCD tests use to show what the sweep is buying.
+  void setCcdEnabled(bool enabled) { ccd_ = enabled; }
+  bool ccdEnabled() const { return ccd_; }
   // The material the ground is made of. Two multipliers, see SurfaceMaterial:
   // the default {1.0, 1.0} is the pre-material behaviour exactly.
   void setSurfaceMaterial(const SurfaceMaterial& material) { surface_ = material; }
@@ -356,6 +386,8 @@ public:
     u64 candidatePairs = 0U;      // pairs the broad phase offered
     u64 pairTests = 0U;           // narrow-phase tests actually run
     u64 broadPhaseRebuilds = 0U;  // broad-phase sorts (one per collect)
+    u64 ccdSweeps = 0U;           // fast spheres that were swept this world
+    u64 ccdHits = 0U;             // impacts the sweep resolved
   };
   const Stats& stats() const { return stats_; }
   void resetStats() { stats_ = Stats{}; }
@@ -424,9 +456,20 @@ private:
   std::map<u32, StaticBox> boxes_;
   std::map<u32, CharacterBody> characters_;
   u32 nextCharacterId_ = kPrimaryCharacter;
+  // Moves one sphere through this step, sweeping it against the static world
+  // when it is fast enough. Returns the impacts resolved.
+  u32 moveSphereContinuous(SphereBody& body);
+  // Earliest impact of a segment against the ground plane: false when it misses.
+  bool sweepSpherePlane(const Vec3& from, const Vec3& delta, f64 radius, f64& time, Vec3& normal) const;
+  // Earliest impact against every static and dynamic box, at their current
+  // positions. Conservative at box corners (the box is expanded by the radius
+  // rather than rounded), never optimistic: it cannot let a ball through.
+  bool sweepSphereBoxes(const Vec3& from, const Vec3& delta, f64 radius, f64& time, Vec3& normal) const;
+
   Wind wind_;
   f64 wetness_ = 0.0;
   SurfaceMaterial surface_;
+  bool ccd_ = true;
   u32 nextId_ = 1U;
   f64 time_ = 0.0;
   u64 steps_ = 0U;

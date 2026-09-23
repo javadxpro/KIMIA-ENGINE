@@ -1065,6 +1065,155 @@ KIMIA_TEST(physics_dry_weather_changes_nothing_at_all) {
   KIMIA_REQUIRE(untouched.z == explicitDry.z);
 }
 
+// --- Stage 36: continuous collision for fast balls ---
+
+KIMIA_TEST(physics_a_fast_ball_cannot_pass_through_a_thin_post) {
+  // The post is 12 cm thick and the ball is 22 cm across, but at 60 m/s the ball
+  // travels half a metre per step — so the discrete test only notices the post if
+  // a step boundary happens to land inside it. The post sits at x = 5.25 here so
+  // that it does NOT: the samples are x = 5.0, 5.5, 6.0 … and the ball used to
+  // sail through the wood. Both directions of the same test are below: with CCD
+  // it cannot, without CCD it does.
+  const auto shoot = [](bool ccd) {
+    PhysicsWorld world;
+    world.addPlane(0.0);
+    world.setCcdEnabled(ccd);
+    world.addBox(Vec3{5.25, 1.0, 0.0}, Vec3{0.06, 1.0, 3.0});  // a goal post
+    SphereBody ball;
+    ball.position = Vec3{0.0, 0.11, 0.0};
+    ball.radius = 0.11;
+    ball.velocity = Vec3{60.0, 0.0, 0.0};  // 0.5 m per step
+    const kimia::u32 id = world.addSphere(ball);
+    for (kimia::u32 i = 0; i < 40U; ++i) world.step();
+    return *world.sphere(id);
+  };
+  // And it is ON in a world nobody configured: the sweep is the default, not a
+  // feature someone has to remember to switch on.
+  PhysicsWorld fresh;
+  KIMIA_REQUIRE(fresh.ccdEnabled());
+  const kimia::SphereBody withCcd = shoot(true);
+  KIMIA_REQUIRE(withCcd.position.x < 5.25);       // stopped by the post
+  KIMIA_REQUIRE(withCcd.velocity.x < 0.0);        // and sent back
+  // What the sweep is worth, measured rather than asserted in a comment.
+  const kimia::SphereBody withoutCcd = shoot(false);
+  KIMIA_REQUIRE(withoutCcd.position.x > 6.0);     // straight through, on the far side
+  KIMIA_REQUIRE(withoutCcd.velocity.x > 0.0);     // never touched anything
+}
+
+KIMIA_TEST(physics_ccd_only_engages_for_fast_movement) {
+  // The threshold is the compatibility guarantee: a ball that moves less than
+  // half its radius in a step takes the old discrete path and produces the old
+  // numbers, bit for bit. So slow worlds are untouched and the sweep's cost is
+  // paid only when a ball is genuinely fast.
+  const auto roll = [](bool ccd) {
+    PhysicsWorld world;
+    world.addPlane(0.0);
+    world.setCcdEnabled(ccd);
+    SphereBody ball;
+    ball.position = Vec3{0.0, 0.2, 0.0};
+    ball.radius = 0.11;
+    ball.velocity = Vec3{1.0, 0.0, -1.0};  // 1.4 m/s: slow
+    const kimia::u32 id = world.addSphere(ball);
+    for (kimia::u32 i = 0; i < 300U; ++i) world.step();
+    return Vec3{world.sphere(id)->position.x, world.sphere(id)->position.y, world.sphere(id)->position.z};
+  };
+  const Vec3 swept = roll(true);
+  const Vec3 discrete = roll(false);
+  KIMIA_REQUIRE(swept.x == discrete.x);  // identical bits, not merely close
+  KIMIA_REQUIRE(swept.y == discrete.y);
+  KIMIA_REQUIRE(swept.z == discrete.z);
+
+  PhysicsWorld fast;
+  fast.addPlane(0.0);
+  SphereBody bullet;
+  bullet.position = Vec3{0.0, 0.5, 0.0};
+  bullet.radius = 0.11;
+  bullet.velocity = Vec3{40.0, 0.0, 0.0};
+  fast.addSphere(bullet);
+  fast.resetStats();
+  fast.step();
+  KIMIA_REQUIRE(fast.stats().ccdSweeps == 1U);  // the fast ball was swept
+  fast.resetStats();
+  SphereBody slow;
+  slow.position = Vec3{0.0, 0.5, 0.0};
+  slow.radius = 0.11;
+  slow.velocity = Vec3{0.5, 0.0, 0.0};
+  fast.addSphere(slow);
+  fast.step();
+  KIMIA_REQUIRE(fast.stats().ccdSweeps == 1U);  // still only the fast one
+}
+
+KIMIA_TEST(physics_a_fast_ball_hits_the_ground_exactly_on_the_surface) {
+  // A ball falling 30 m/s used to be caught only after it was already inside the
+  // floor, and shoved back out over the next iterations. Swept, the bounce
+  // happens at the surface: the ball never goes under it at all.
+  PhysicsWorld world;
+  world.addPlane(0.0);
+  SphereBody ball;
+  ball.position = Vec3{0.0, 5.0, 0.0};
+  ball.radius = 0.11;
+  ball.restitution = 0.5;
+  ball.velocity = Vec3{0.0, -30.0, 0.0};
+  const kimia::u32 id = world.addSphere(ball);
+  f64 lowest = 5.0;
+  for (kimia::u32 i = 0; i < 240U; ++i) {
+    world.step();
+    lowest = std::min(lowest, world.sphere(id)->position.y);
+  }
+  KIMIA_REQUIRE(lowest >= ball.radius - 1e-9);        // never below the surface
+  KIMIA_REQUIRE(world.sphere(id)->position.y > 1.0);  // and it bounced back up
+}
+
+KIMIA_TEST(physics_ccd_keeps_a_shot_on_the_same_side_at_60_and_120_hz) {
+  // Frame-rate independence is the whole point: at 60 Hz the ball travels a full
+  // metre per step, at 120 Hz half of that, and neither may put it through the
+  // post. Only the outcome is compared (a bounce happens at a slightly different
+  // instant at a different step size), never the intermediate numbers.
+  const auto shootAt = [](f64 fixedDt) {
+    PhysicsWorld world(fixedDt);
+    world.addPlane(0.0);
+    world.addBox(Vec3{5.25, 1.0, 0.0}, Vec3{0.06, 1.0, 3.0});
+    SphereBody ball;
+    ball.position = Vec3{0.0, 0.11, 0.0};
+    ball.radius = 0.11;
+    ball.velocity = Vec3{60.0, 0.0, 0.0};
+    const kimia::u32 id = world.addSphere(ball);
+    for (kimia::u32 i = 0; i < 80U; ++i) world.step();
+    return *world.sphere(id);
+  };
+  const kimia::SphereBody at60 = shootAt(1.0 / 60.0);
+  const kimia::SphereBody at120 = shootAt(1.0 / 120.0);
+  KIMIA_REQUIRE(at60.position.x < 5.25 && at120.position.x < 5.25);
+  KIMIA_REQUIRE(at60.velocity.x < 0.0 && at120.velocity.x < 0.0);
+}
+
+KIMIA_TEST(physics_ccd_lets_a_shot_hit_the_post_then_the_ground) {
+  // Two impacts inside ONE step is the case a single-resolution sweep gets
+  // wrong: the ball would be parked on the first surface with the rest of the
+  // step unspent — or worse, left inside the floor. This ball is low and fast
+  // and heading down, so the floor and the post are both inside the same step.
+  PhysicsWorld world;
+  world.addPlane(0.0);
+  world.addBox(Vec3{3.0, 0.75, 0.0}, Vec3{0.06, 0.75, 3.0});  // a post, 1.5 m tall
+  SphereBody ball;
+  ball.position = Vec3{2.7, 0.35, 0.0};
+  ball.radius = 0.11;
+  ball.velocity = Vec3{40.0, -60.0, 0.0};  // at the post and into the ground
+  const kimia::u32 id = world.addSphere(ball);
+  world.resetStats();
+  world.step();  // the one step both impacts live in
+  KIMIA_REQUIRE(world.stats().ccdHits == 2U);              // both surfaces, one step
+  const kimia::SphereBody after = *world.sphere(id);
+  KIMIA_REQUIRE(after.position.x < 3.0);                   // stayed on the near side
+  KIMIA_REQUIRE(after.position.y >= ball.radius - 1e-9);   // and never sank through the floor
+  // It survives the rest of the second too: nothing here may tunnel.
+  for (kimia::u32 i = 0; i < 120U; ++i) {
+    world.step();
+    KIMIA_REQUIRE(world.sphere(id)->position.y >= ball.radius - 1e-9);
+    KIMIA_REQUIRE(world.sphere(id)->position.x < 3.0);
+  }
+}
+
 // --- Stage 35: surface materials ---
 
 KIMIA_TEST(physics_the_default_material_is_the_old_behaviour_exactly) {
