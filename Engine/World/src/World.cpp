@@ -2472,6 +2472,7 @@ const char* WorldEditor::eventTriggerName(GameEvent event) {
   switch (event) {
     case GameEvent::Shot: return "shot";
     case GameEvent::Kick: return "kick";
+    case GameEvent::Pass: return "pass";
     case GameEvent::Holed: return "holed";
     case GameEvent::Goal: return "goal";
     case GameEvent::RoundOver: return "roundover";

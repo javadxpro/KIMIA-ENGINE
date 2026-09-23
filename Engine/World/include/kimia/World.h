@@ -128,6 +128,37 @@ inline constexpr f64 kAiDribblePush = 2.6;
 inline constexpr f64 kAiShootFrom = 4.5;
 inline constexpr f64 kAiShootSpeed = 9.0;
 
+// --- Passing (stage 37) ---
+//
+// Until this existed the player on the ball always drove it at the net, so a
+// side with a team-mate standing free in front of goal still walked into the
+// defence alone. Passing is what makes a five-a-side team a team: the carrier
+// now picks between shooting, passing to a chosen team-mate and carrying the
+// ball, and the choice is a SCORE (see WorldEditor::aiDecision) rather than a
+// chain of ifs, so it can be printed, tested and tuned.
+// How wide a cone down a pass lane must be clear for the pass to count as easy.
+inline constexpr f64 kAiPassLaneClear = 1.4;
+// A team-mate further up the pitch than the carrier by this much is a real
+// option; anything less is a square ball that gains nothing.
+inline constexpr f64 kAiPassMinGain = 1.0;
+// Pass speed: proportional to the distance, then clamped. A pass fired at a
+// fixed speed either arrives late or arrives as a rocket, and both look wrong.
+inline constexpr f64 kAiPassSpeedPerMeter = 2.2;
+inline constexpr f64 kAiPassMinSpeed = 4.0;
+inline constexpr f64 kAiPassMaxSpeed = 12.0;
+// The carrier drives the ball itself when nothing better exists (this is the
+// old dribble-at-goal behaviour, kept as the fallback rather than the default).
+inline constexpr f64 kAiCarryScore = 0.35;
+// How much the decision prefers the safe option when the skill is low: a weak
+// side plays the simple ball, a strong one tries the harder pass.
+inline constexpr f64 kAiPassSkillWeight = 0.6;
+// How long after playing the ball before the same player may fire another
+// pass/kick/tackle EVENT. The push itself repeats while the player stays on the
+// ball (that is how the ball is carried), but an event is a TOUCH, not a frame:
+// without this a three-minute match reported 687 passes and 3996 tackles, which
+// would machine-gun any animation, sound or user rule hanging off them.
+inline constexpr f64 kAiTouchCooldown = 0.6;
+
 // --- Camera director (stage 28) ---
 // How fast the camera swings to follow the aim, 1/s.
 inline constexpr f64 kCameraFollowRate = 6.0;
@@ -610,6 +641,37 @@ public:
   // True when this side has the ball (their chaser is on it).
   bool aiHasPossession(u32 team) const;
 
+  // --- AI decisions (stage 37) ---
+  // What a computer player does with the ball. One action per carrier, chosen
+  // by score; the scores are exposed so the editor can SHOW the decision
+  // instead of the game merely behaving differently (phase 6 asks for a debug
+  // view of role, target and decision score).
+  enum class AiAction { None, Shoot, Pass, Carry };
+  static const char* aiActionName(AiAction action);  // "none" / "shoot" / "pass" / "carry"
+
+  struct AiDecision {
+    AiAction action = AiAction::None;  // None = this player is not on the ball
+    u32 targetId = 0U;                 // Pass: the team-mate; Shoot: the goal entity
+    Vec3 target{0.0, 0.0, 0.0};        // where the ball is being sent
+    f64 score = 0.0;                   // the winning score
+    f64 runnerUp = 0.0;                // the next-best score (how close it was)
+    f64 shootScore = 0.0;              // the three scores, always, for the debug view
+    f64 passScore = 0.0;
+    f64 carryScore = 0.0;
+  };
+  // The decision for `id` from the CURRENT state. A pure function of the world:
+  // calling it twice returns the same numbers, and nothing about it depends on
+  // the frame rate or on any hidden state.
+  AiDecision aiDecision(u32 id) const;
+  // How hard the pass to `mateId` would be to intercept, 0..1 (1 = a clear
+  // lane). Used by the score above and by the debug view.
+  f64 aiPassLaneQuality(u32 mateId) const;
+  // Where a team-mate will be in `seconds` if they keep running: the aim point
+  // for a pass. Their live velocity (from the physics, which the AI itself
+  // drives) is the only honest way to know, and it makes a pass to a running
+  // player arrive in front of them instead of behind.
+  Vec3 aiPassLeadTarget(u32 mateId, f64 seconds) const;
+
   // The middle of the net this team is shooting at. Falls back to the far
   // end of the pitch when the world has no goal built yet.
   Vec3 aiGoalMouth(u32 team) const;
@@ -687,7 +749,7 @@ public:
   // Every update() that shoots / kicks / scores / ends the round pushes one
   // event; the app drains them once per frame and plays the sounds it has.
   // Events survive until drained so a slow frame never loses one.
-  enum class GameEvent { Shot, Kick, Holed, Goal, RoundOver, Whistle, Tackle, Trick };
+  enum class GameEvent { Shot, Kick, Pass, Holed, Goal, RoundOver, Whistle, Tackle, Trick };
   std::vector<GameEvent> drainEvents();
   // The trigger name a built-in event fires ("goal", "kick", ...), so a
   // component attached in the editor can respond to it with no code.
@@ -1215,6 +1277,7 @@ private:
   bool lastShotHit_ = false;
   // Per-character jam detection: where it was, how long it has failed to
   // get anywhere, and how long it should keep sidestepping.
+  std::map<u32, f64> aiTouchCooldown_;  // per player: seconds until the next touch event
   std::map<u32, Vec3> aiLastPos_;
   std::map<u32, f64> aiStuckFor_;
   std::map<u32, f64> aiUnstickFor_;

@@ -652,6 +652,40 @@ std::string handleApi(WorldEditor& editor, const std::string& path,
     return out + "]}";
   }
 
+  // --- AI debug view (stage 37) ---
+  // Phase 6 asks for a tool that SHOWS what the computer players are thinking:
+  // role, target point, the action they picked and the score it won with, plus
+  // the runners-up. A decision nobody can inspect is a decision nobody can
+  // tune, and "the AI plays better now" would be an unfalsifiable claim.
+  if (path == "/api/ai") {
+    std::string out = "{\"ok\":true,\"active\":" + std::string(editor.aiActive() ? "true" : "false");
+    out += ",\"skill\":" + number(editor.profile().aiSkill);
+    out += ",\"players\":[";
+    bool first = true;
+    for (const u32 id : editor.squadIds()) {
+      const Vec3 target = editor.aiTargetFor(id);
+      const WorldEditor::AiDecision decision = editor.aiDecision(id);
+      if (!first) out += ",";
+      first = false;
+      out += "{\"id\":" + std::to_string(id);
+      out += ",\"team\":" + std::to_string(editor.squadTeam(id));
+      out += ",\"role\":" + quoted(WorldEditor::aiRoleName(editor.aiRole(id)));
+      out += ",\"action\":" + quoted(WorldEditor::aiActionName(decision.action));
+      out += ",\"x\":" + number(editor.squadPosition(id).x);
+      out += ",\"z\":" + number(editor.squadPosition(id).z);
+      out += ",\"targetX\":" + number(target.x);
+      out += ",\"targetZ\":" + number(target.z);
+      out += ",\"targetId\":" + std::to_string(decision.targetId);
+      out += ",\"score\":" + number(decision.score);
+      out += ",\"runnerUp\":" + number(decision.runnerUp);
+      out += ",\"shoot\":" + number(decision.shootScore);
+      out += ",\"pass\":" + number(decision.passScore);
+      out += ",\"carry\":" + number(decision.carryScore);
+      out += "}";
+    }
+    return out + "]}";
+  }
+
   if (path == "/api/rules") {
     const LogicBook& book = editor.logic();
     std::string out = "{\"ok\":true,\"rules\":[";

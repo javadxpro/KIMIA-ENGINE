@@ -107,6 +107,7 @@ Web/              پوستهٔ WebGL (Emscripten)
 | [Architecture](Documentation/Architecture.md) | لایه‌های موتور و جریان داده |
 | [Rendering](Documentation/Rendering.md) | مسیرهای رندر و خط لولهٔ رنگ |
 | [Physics](Documentation/Physics.md) | موتور فیزیک |
+| [Ai](Documentation/Ai.md) | نقش‌ها، تصمیم امتیازدهی‌شده و ابزار دیباگ هوش مصنوعی |
 | [Scene](Documentation/Scene.md) | صحنه، SceneIO و قراردادهای ریاضی |
 | [WorldEditor](Documentation/WorldEditor.md) | ویرایشگر و رابط کاربری |
 | [Games](Documentation/Games.md) | پروفایل‌ها، گیم‌پلی و کنترل‌ها |

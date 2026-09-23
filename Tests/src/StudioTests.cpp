@@ -1307,6 +1307,43 @@ KIMIA_TEST(studio_control_targets_one_character_and_survives_serialization) {
   KIMIA_REQUIRE(control->target == second);
 }
 
+KIMIA_TEST(studio_ai_endpoint_shows_role_target_action_and_score) {
+  // The debug view phase 6 asks for: every computer player with its role, the
+  // point it is running to, the action it chose with the ball and the score it
+  // won with. Without this, "the AI plays better" is unfalsifiable.
+  WorldEditor editor;
+  streetWorld(editor);
+  for (kimia::usize i = 0; i < editor.profileCount(); ++i) {
+    if (editor.profileAt(i).name != "street") continue;
+    kimia::GameProfile profile = editor.profileAt(i);
+    profile.aiSkill = 0.7;
+    editor.createWorld(profile);
+    break;
+  }
+  editor.setPlayerPosition(Vec3{0.0, 0.5, 0.0});
+  editor.setMoveInput(0.0, 0.0);
+  editor.update(1.0 / 60.0);  // one step so the squads really exist
+
+  const std::string response = ask(editor, "/api/ai");
+  KIMIA_REQUIRE(has(response, "\"players\":["));
+  KIMIA_REQUIRE(has(response, "\"role\":\""));
+  KIMIA_REQUIRE(has(response, "\"action\":\""));
+  KIMIA_REQUIRE(has(response, "\"score\":"));
+  KIMIA_REQUIRE(has(response, "\"shoot\":"));
+  KIMIA_REQUIRE(has(response, "\"pass\":"));
+  KIMIA_REQUIRE(has(response, "\"carry\":"));
+  KIMIA_REQUIRE(has(response, "\"targetX\":"));
+  // One entry per squad member, and the human is in there too (as IDLE): the
+  // view shows the whole pitch, not a filtered subset.
+  kimia::usize entries = 0U;
+  kimia::usize at = 0U;
+  while ((at = response.find("\"role\":", at)) != std::string::npos) {
+    ++entries;
+    at += 7U;
+  }
+  KIMIA_REQUIRE(entries == editor.squadCount());
+}
+
 KIMIA_TEST(studio_surface_endpoint_lists_and_sets_the_pitch_material) {
   // The material is content the editor has to be able to change at runtime —
   // a dropdown that cannot be set is a screenshot, not a feature.

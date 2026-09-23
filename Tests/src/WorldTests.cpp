@@ -4219,6 +4219,166 @@ KIMIA_TEST(world_the_boards_bounce_the_ball_back_into_play) {
   KIMIA_REQUIRE(editor.ballPosition().z < bound - 0.05);
 }
 
+// --- Stage 37: the AI makes a scored decision, not a pile of ifs ---
+
+KIMIA_TEST(world_ai_passes_to_a_team_mate_who_is_free_ahead) {
+  // The complaint this answers: a side with somebody free in front of goal
+  // still walked the ball into the defence alone. Now the carrier chooses, and
+  // the choice is a score the editor can print.
+  WorldEditor editor;
+  streetWithNets(editor);
+  const u32 chaser = editor.aiChaser(1U);
+  KIMIA_REQUIRE(chaser != 0U);
+  // Team 1 attacks -Z, so "further up the pitch" means a smaller z.
+  for (const u32 id : editor.squadIds()) {
+    if (editor.squadTeam(id) != 2U) continue;
+    editor.setSquadPosition(id, Vec3{-2.0, 0.5, -7.0});  // the opposition, deep and wide
+  }
+  editor.setSquadPosition(chaser, Vec3{0.0, 0.5, 1.0});
+  editor.setBallPosition(Vec3{0.0, editor.world().ball.radius, 1.2});  // at the carrier's feet
+  editor.setBallVelocity(Vec3{0.0, 0.0, 0.0});
+  // One team-mate free and ahead, everyone else behind the ball.
+  u32 freeMate = 0U;
+  for (const u32 id : editor.squadIds()) {
+    // The human is on team 1 too, but nobody passes to the human: the person
+    // driving them decides where they run. (aiDecision refuses to as well, so
+    // this loop has to skip them or it picks a target the AI never would.)
+    if (id == chaser || id == kimia::kPrimaryCharacter || id == editor.aiKeeper(1U) || editor.squadTeam(id) != 1U) {
+      continue;
+    }
+    if (freeMate == 0U) {
+      freeMate = id;
+      editor.setSquadPosition(id, Vec3{0.4, 0.5, -2.0});  // three metres up the pitch, in space
+    } else {
+      editor.setSquadPosition(id, Vec3{-1.6, 0.5, 6.5});  // behind the ball: not an option
+    }
+  }
+  KIMIA_REQUIRE(freeMate != 0U);
+
+  const kimia::WorldEditor::AiDecision decision = editor.aiDecision(chaser);
+  KIMIA_REQUIRE(decision.action == kimia::WorldEditor::AiAction::Pass);
+  KIMIA_REQUIRE(decision.targetId == freeMate);
+  KIMIA_REQUIRE(decision.passScore > decision.shootScore);
+  KIMIA_REQUIRE(decision.passScore > decision.carryScore);
+  // The lane to that team-mate is genuinely clear, which is WHY it is the pick.
+  KIMIA_REQUIRE(editor.aiPassLaneQuality(freeMate) > 0.9);
+
+  // And it is played: the ball travels toward the team-mate, and a pass event
+  // fires so the rest of the engine (animation, audio, a user's rule) can see it.
+  const f64 before = editor.ballPosition().z;
+  bool passed = false;
+  for (i32 f = 0; f < 40; ++f) {
+    editor.update(1.0 / 60.0);
+    for (const kimia::WorldEditor::GameEvent event : editor.drainEvents()) {
+      if (event == kimia::WorldEditor::GameEvent::Pass) passed = true;
+    }
+  }
+  KIMIA_REQUIRE(passed);
+  KIMIA_REQUIRE(editor.ballPosition().z < before - 0.5);  // it went up the pitch
+}
+
+KIMIA_TEST(world_ai_makes_passes_and_scoring_chances_in_a_real_match) {
+  // The acceptance check for the passing work, measured over a real match at a
+  // real skill level rather than in a posed scene: a five-a-side should see the
+  // ball moved between team-mates, and somebody should still be able to score.
+  WorldEditor editor;
+  streetWithNets(editor);
+  editor.setAiSkill(0.6);
+  i32 passes = 0;
+  i32 shots = 0;
+  i32 tackles = 0;
+  for (i32 f = 0; f < 10800; ++f) {  // three minutes
+    editor.update(1.0 / 60.0);
+    for (const kimia::WorldEditor::GameEvent event : editor.drainEvents()) {
+      if (event == kimia::WorldEditor::GameEvent::Pass) ++passes;
+      if (event == kimia::WorldEditor::GameEvent::Kick) ++shots;
+      if (event == kimia::WorldEditor::GameEvent::Tackle) ++tackles;
+    }
+  }
+  KIMIA_REQUIRE(passes > 0);   // the ball moves between team-mates
+  KIMIA_REQUIRE(shots > 0);    // and somebody still has a go
+  KIMIA_REQUIRE(tackles > 0);  // and the other side challenges for it
+  // And they are TOUCHES, not frames. The push repeats while a player stays on
+  // the ball, so without a cooldown this match reported 687 passes and 3996
+  // tackles — which would machine-gun anything hanging off those events.
+  KIMIA_REQUIRE(passes < 200);
+  KIMIA_REQUIRE(tackles < 400);
+  const u32 total = editor.teamScore(1U) + editor.teamScore(2U);
+  KIMIA_REQUIRE(total > 0);    // a side actually scores, so the match is a game
+}
+
+KIMIA_TEST(world_ai_shoots_from_close_range_and_carries_when_nothing_is_better) {
+  WorldEditor editor;
+  streetWithNets(editor);
+  const u32 chaser = editor.aiChaser(1U);
+  KIMIA_REQUIRE(chaser != 0U);
+  for (const u32 id : editor.squadIds()) {
+    if (editor.squadTeam(id) != 1U) continue;
+    if (id == editor.aiKeeper(1U)) continue;
+    if (id != chaser) editor.setSquadPosition(id, Vec3{-1.7, 0.5, 6.5});  // all behind the ball
+  }
+  // Two metres off the net: this is a shot and nothing else is close.
+  editor.setSquadPosition(chaser, Vec3{0.0, 0.5, -5.0});
+  editor.setBallPosition(Vec3{0.0, editor.world().ball.radius, -5.2});
+  editor.setBallVelocity(Vec3{0.0, 0.0, 0.0});
+  const kimia::WorldEditor::AiDecision closeIn = editor.aiDecision(chaser);
+  KIMIA_REQUIRE(closeIn.action == kimia::WorldEditor::AiAction::Shoot);
+  KIMIA_REQUIRE(closeIn.shootScore > closeIn.carryScore);
+
+  // And from the halfway line with nothing ahead, the only thing left is to
+  // carry it — which is exactly the old behaviour, kept as the fallback.
+  editor.setSquadPosition(chaser, Vec3{0.0, 0.5, 1.0});
+  editor.setBallPosition(Vec3{0.0, editor.world().ball.radius, 1.2});
+  editor.setBallVelocity(Vec3{0.0, 0.0, 0.0});
+  const kimia::WorldEditor::AiDecision farOut = editor.aiDecision(chaser);
+  KIMIA_REQUIRE(farOut.action == kimia::WorldEditor::AiAction::Carry);
+  KIMIA_REQUIRE(farOut.carryScore > farOut.shootScore);
+  KIMIA_REQUIRE(farOut.carryScore > farOut.passScore);
+}
+
+KIMIA_TEST(world_ai_decision_is_a_pure_function_of_the_world) {
+  // Two identical worlds must make identical choices — that is what makes a
+  // match replayable from a seed, and what stops the AI from being "random" in
+  // the only place nobody can debug it.
+  const auto run = [](std::vector<kimia::f64>& trace, std::vector<kimia::Vec3>& balls) {
+    WorldEditor editor;
+    streetWithNets(editor);
+    for (i32 f = 0; f < 600; ++f) {
+      editor.update(1.0 / 60.0);
+      const u32 chaser = editor.aiChaser(1U);
+      const kimia::WorldEditor::AiDecision decision = editor.aiDecision(chaser);
+      trace.push_back(decision.score);
+      balls.push_back(editor.ballPosition());
+    }
+  };
+  std::vector<kimia::f64> firstScores;
+  std::vector<kimia::Vec3> firstBalls;
+  std::vector<kimia::f64> secondScores;
+  std::vector<kimia::Vec3> secondBalls;
+  run(firstScores, firstBalls);
+  run(secondScores, secondBalls);
+  KIMIA_REQUIRE(firstScores.size() == secondScores.size());
+  for (kimia::usize i = 0; i < firstScores.size(); ++i) {
+    KIMIA_REQUIRE(firstScores[i] == secondScores[i]);                        // same score, same bits
+    KIMIA_REQUIRE(firstBalls[i].x == secondBalls[i].x);                      // same world, same ball
+    KIMIA_REQUIRE(firstBalls[i].y == secondBalls[i].y);
+    KIMIA_REQUIRE(firstBalls[i].z == secondBalls[i].z);
+  }
+  // Calling it twice on an unchanged world cannot move the answer either: no
+  // hidden state, no accumulating timers.
+  WorldEditor editor;
+  streetWithNets(editor);
+  editor.update(1.0 / 60.0);
+  const kimia::WorldEditor::AiDecision once = editor.aiDecision(editor.aiChaser(1U));
+  const kimia::WorldEditor::AiDecision twice = editor.aiDecision(editor.aiChaser(1U));
+  KIMIA_REQUIRE(once.action == twice.action);
+  KIMIA_REQUIRE(once.targetId == twice.targetId);
+  KIMIA_REQUIRE(once.score == twice.score);
+  KIMIA_REQUIRE(once.passScore == twice.passScore);
+  KIMIA_REQUIRE(once.shootScore == twice.shootScore);
+  KIMIA_REQUIRE(once.target.x == twice.target.x && once.target.z == twice.target.z);
+}
+
 KIMIA_TEST(world_a_shot_off_the_post_does_not_sneak_in_through_the_wood) {
   // End to end CCD: a hard shot fired at the post must come back off it instead
   // of appearing inside the goal. The post is 12 cm of a real goal entity, and

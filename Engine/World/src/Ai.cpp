@@ -143,6 +143,157 @@ Vec3 WorldEditor::aiGoalMouth(u32 team) const {
   return mouth;
 }
 
+const char* WorldEditor::aiActionName(AiAction action) {
+  switch (action) {
+    case AiAction::Shoot: return "shoot";
+    case AiAction::Pass: return "pass";
+    case AiAction::Carry: return "carry";
+    case AiAction::None: break;
+  }
+  return "none";
+}
+
+// How easy the pass to `mateId` is to cut out. 1 = nobody within
+// kAiPassLaneClear of the lane; 0 = an opponent is standing on it (or there is
+// no lane at all). Distance is measured to the SEGMENT, not to its ends: a
+// defender level with the carrier but in the way still blocks the ball.
+f64 WorldEditor::aiPassLaneQuality(u32 mateId) const {
+  const SphereBody* ball = physics_.sphere(ballId_);
+  const CharacterBody* mate = physics_.characterById(mateId);
+  if (ball == nullptr || mate == nullptr) return 0.0;
+  // The lane starts at the CARRIER, not at the ball: a pass is played from the
+  // foot, and measuring from the ball makes the first metre of every lane look
+  // blocked by whoever is on the ball.
+  const CharacterBody* self = physics_.characterById(aiChaser(mate->team));
+  const Vec3 from = self != nullptr ? Vec3{self->position.x, 0.0, self->position.z}
+                                    : Vec3{ball->position.x, 0.0, ball->position.z};
+  const Vec3 to{mate->position.x, 0.0, mate->position.z};
+  const Vec3 along{to.x - from.x, 0.0, to.z - from.z};
+  const f64 length = along.length();
+  if (length <= kMoveEpsilon) return 0.0;  // on top of each other: no lane
+  f64 closest = kAiPassLaneClear;
+  for (const u32 other : physics_.characterIds()) {
+    const CharacterBody* rival = physics_.characterById(other);
+    if (rival == nullptr || rival->team == mate->team) continue;
+    const Vec3 offset{rival->position.x - from.x, 0.0, rival->position.z - from.z};
+    f64 t = kimia::dot(offset, along) / (length * length);
+    t = std::min(1.0, std::max(0.0, t));  // inside the lane only
+    const Vec3 point{from.x + along.x * t, 0.0, from.z + along.z * t};
+    const f64 gap = std::sqrt((rival->position.x - point.x) * (rival->position.x - point.x) +
+                              (rival->position.z - point.z) * (rival->position.z - point.z));
+    closest = std::min(closest, gap);
+  }
+  return std::min(1.0, closest / kAiPassLaneClear);
+}
+
+Vec3 WorldEditor::aiPassLeadTarget(u32 mateId, f64 seconds) const {
+  const CharacterBody* mate = physics_.characterById(mateId);
+  if (mate == nullptr) return Vec3{0.0, 0.0, 0.0};
+  const f64 lead = std::max(0.0, seconds);
+  return Vec3{mate->position.x + mate->velocity.x * lead, mate->position.y, mate->position.z + mate->velocity.z * lead};
+}
+
+WorldEditor::AiDecision WorldEditor::aiDecision(u32 id) const {
+  AiDecision decision;
+  const CharacterBody* body = physics_.characterById(id);
+  const SphereBody* ball = physics_.sphere(ballId_);
+  if (body == nullptr || ball == nullptr || !aiActive()) return decision;
+  // Only the player ON the ball makes this choice. Everyone else is holding
+  // shape (see aiTargetFor), and inventing an action for them would put a lie
+  // in the debug view.
+  if (aiRole(id) != AiRole::Attack) return decision;
+  const f64 ballDistance = std::sqrt((ball->position.x - body->position.x) * (ball->position.x - body->position.x) +
+                                     (ball->position.z - body->position.z) * (ball->position.z - body->position.z));
+  if (ballDistance >= world_.ball.radius + kAiTackleReach + kAiApproachOffset) return decision;
+  const u32 team = body->team;
+  const f64 skill = world_.profile.aiSkill;
+  const f64 forward = attackDirectionZ(team);
+  const Vec3 mouth = aiGoalMouth(team);
+
+  // --- Shooting ---
+  // The goal is worth the most, but only from range: a shot from the halfway
+  // line is a pass to the other keeper. The keeper standing in the right place
+  // takes the value down, which is what makes the AI look for the other corner.
+  const f64 shotDistance = std::sqrt((mouth.x - ball->position.x) * (mouth.x - ball->position.x) +
+                                     (mouth.z - ball->position.z) * (mouth.z - ball->position.z));
+  if (shotDistance <= kAiShootRange) {
+    decision.shootScore = 1.0 - shotDistance / kAiShootRange * 0.6;
+    const u32 keeper = aiKeeper(team == 1U ? 2U : 1U);
+    const CharacterBody* goalie = physics_.characterById(keeper);
+    if (goalie != nullptr) {
+      const f64 keeperGap = std::sqrt((goalie->position.x - mouth.x) * (goalie->position.x - mouth.x) +
+                                      (goalie->position.z - mouth.z) * (goalie->position.z - mouth.z));
+      // A keeper sitting on the line where we are aiming takes a good part of
+      // the value off the shot; one dragged out of position leaves it as good
+      // as it was. The floor keeps a tap-in a shot even with the keeper home —
+      // a striker two metres out shooting into the keeper is football, and
+      // turning that into a square pass would look like the AI is scared.
+      decision.shootScore *= 0.55 + 0.45 * std::min(1.0, keeperGap / kAiKeeperRange);
+    }
+  }
+
+  // --- Passing ---
+  // A team-mate is worth passing to when the ball would end up further up the
+  // pitch, nobody is standing in the lane, and the team-mate is not himself
+  // marked. Skill weights the lane: a weak side only plays the safe ball.
+  u32 bestMate = 0U;
+  for (const u32 other : physics_.characterIds()) {
+    if (other == id || other == kPrimaryCharacter) continue;
+    const CharacterBody* mate = physics_.characterById(other);
+    if (mate == nullptr || mate->team != team) continue;
+    // Never pass back to the keeper, and never to someone level with us.
+    if (other == aiKeeper(team)) continue;
+    const f64 gain = (mate->position.z - ball->position.z) * forward;
+    if (gain < kAiPassMinGain) continue;
+    // How much room the team-mate has: a pass into a crowd is a tackle waiting
+    // to happen. Measured against the nearest opponent.
+    f64 room = kAiPassLaneClear;
+    for (const u32 rival : physics_.characterIds()) {
+      const CharacterBody* opponent = physics_.characterById(rival);
+      if (opponent == nullptr || opponent->team == team) continue;
+      const f64 gap = std::sqrt((opponent->position.x - mate->position.x) * (opponent->position.x - mate->position.x) +
+                                (opponent->position.z - mate->position.z) * (opponent->position.z - mate->position.z));
+      room = std::min(room, gap);
+    }
+    const f64 freeSpace = std::min(1.0, room / kAiPassLaneClear);
+    const f64 lane = aiPassLaneQuality(other);
+    const f64 laneWeight = kAiPassSkillWeight + (1.0 - kAiPassSkillWeight) * skill;
+    const f64 score = (1.0 - laneWeight + laneWeight * lane) * (0.5 + 0.5 * freeSpace) *
+                      std::min(1.0, gain / (world_.halfLength() * 0.5));
+    if (score > decision.passScore) {
+      decision.passScore = score;
+      bestMate = other;
+    }
+  }
+
+  // --- Carry (the old dribble-at-goal) ---
+  // Worth something, because standing still is worth nothing; but it is the
+  // worst option when a shot or a real pass exists.
+  decision.carryScore = kAiCarryScore;
+
+  decision.action = AiAction::Carry;
+  decision.target = mouth;
+  decision.score = decision.carryScore;
+  decision.runnerUp = 0.0;
+  if (decision.passScore > decision.score) {
+    decision.action = AiAction::Pass;
+    decision.targetId = bestMate;
+    const CharacterBody* mate = physics_.characterById(bestMate);
+    if (mate != nullptr) decision.target = Vec3{mate->position.x, 0.0, mate->position.z};
+    decision.score = decision.passScore;
+    decision.runnerUp = std::max(decision.carryScore, decision.shootScore);
+  } else {
+    decision.runnerUp = decision.passScore;
+  }
+  if (decision.shootScore > decision.score) {
+    decision.action = AiAction::Shoot;
+    decision.target = mouth;
+    decision.runnerUp = std::max(decision.score, decision.passScore);
+    decision.score = decision.shootScore;
+  }
+  return decision;
+}
+
 WorldEditor::AiRole WorldEditor::aiRole(u32 id) const {
   if (!aiActive() || id == kPrimaryCharacter) return AiRole::Idle;
   const CharacterBody* body = physics_.characterById(id);
@@ -341,6 +492,10 @@ void WorldEditor::updateAi(f64 seconds) {
   const f64 boundX = world_.halfWidth() - kPlayerMargin;
   const f64 boundZ = world_.halfLength() - kPlayerMargin;
 
+  for (auto& cooldown : aiTouchCooldown_) {
+    if (cooldown.second > 0.0) cooldown.second = std::max(0.0, cooldown.second - seconds);
+  }
+
   for (const u32 id : physics_.characterIds()) {
     if (id == kPrimaryCharacter) continue;  // the human drives themself
     CharacterBody* body = physics_.characterById(id);
@@ -438,18 +593,51 @@ void WorldEditor::updateAi(f64 seconds) {
         const bool atAttackingLine = forward > 0.0 ? ball->position.z > endWall - kAiWallEscape
                                                    : ball->position.z < -(endWall - kAiWallEscape);
         const Vec3 want = aiGoalMouth(body->team);
+        // What to do with the ball is a DECISION, scored, not a chain of ifs:
+        // shoot, pass to a team-mate, or carry it yourself (stage 37). The
+        // scores are in aiDecision() and the editor can print them.
+        const AiDecision choice = aiDecision(id);
+        Vec3 aimXZ = want;              // where the ball is being sent
+        f64 push = kAiDribblePush;      // how hard
+        if (choice.action == AiAction::Shoot) {
+          push = kAiShootSpeed;
+        } else if (choice.action == AiAction::Pass) {
+          const CharacterBody* mate = physics_.characterById(choice.targetId);
+          const f64 passDistance =
+              mate != nullptr ? std::sqrt((mate->position.x - ball->position.x) * (mate->position.x - ball->position.x) +
+                                          (mate->position.z - ball->position.z) * (mate->position.z - ball->position.z))
+                              : 0.0;
+          // Lead the runner: aim where the team-mate WILL be when the ball
+          // arrives, not where they are now — a pass to a walking player's feet
+          // is a pass to where the ball was.
+          const f64 passSpeed = std::min(kAiPassMaxSpeed, std::max(kAiPassMinSpeed, passDistance * kAiPassSpeedPerMeter));
+          const f64 flight = passSpeed > kMoveEpsilon ? passDistance / passSpeed : 0.0;
+          const Vec3 predicted = aiPassLeadTarget(choice.targetId, flight);
+          aimXZ = Vec3{predicted.x, 0.0, predicted.z};
+          push = passSpeed;
+        }
+        // The end-wall trap still wins over everything: from the line with no
+        // net behind it the only way out is infield.
         const bool stuck = atAttackingLine && !goalAtEnd(forward > 0.0);
-        const f64 towardX = stuck ? -ball->position.x : want.x - ball->position.x;
-        const f64 towardZ = stuck ? -ball->position.z : want.z - ball->position.z;
+        const f64 towardX = stuck ? -ball->position.x : aimXZ.x - ball->position.x;
+        const f64 towardZ = stuck ? -ball->position.z : aimXZ.z - ball->position.z;
         const f64 towardLength = std::sqrt(towardX * towardX + towardZ * towardZ);
         if (towardLength > kMoveEpsilon) {
-          // Close to the net: hit it. Dribbling all the way in gave the
-          // defence time to get back every single time.
-          const bool shooting = towardLength < kAiShootFrom;
-          const f64 push = shooting ? kAiShootSpeed : kAiDribblePush;
           ball->velocity.x = towardX / towardLength * push * skill;
           ball->velocity.z = towardZ / towardLength * push * skill;
-          if (shooting) events_.push_back(GameEvent::Kick);
+          // A pass is a real event: the animation, the audio and a rule can
+          // all hang off it, exactly like a shot. One event per TOUCH, though —
+          // the push above repeats every frame the player stays on the ball,
+          // and six hundred "passes" a minute is not a match.
+          if (aiTouchCooldown_[id] <= 0.0) {
+            if (choice.action == AiAction::Shoot) {
+              events_.push_back(GameEvent::Kick);
+              aiTouchCooldown_[id] = kAiTouchCooldown;
+            } else if (choice.action == AiAction::Pass && !stuck) {
+              events_.push_back(GameEvent::Pass);
+              aiTouchCooldown_[id] = kAiTouchCooldown;
+            }
+          }
         }
       }
     }
@@ -521,7 +709,12 @@ void WorldEditor::updateAi(f64 seconds) {
       const bool onTheLine = std::abs(ball->position.z) > endWall - kAiWallEscape;
       ball->velocity.z = (onTheLine ? -toward : toward) * kAiTacklePush * skill;
     }
-    events_.push_back(GameEvent::Tackle);
+    // A challenge is a touch too: the clearance repeats while the defender
+    // stays in reach, but the tackle is one event, not one per frame.
+    if (aiTouchCooldown_[id] <= 0.0) {
+      events_.push_back(GameEvent::Tackle);
+      aiTouchCooldown_[id] = kAiTouchCooldown;
+    }
   }
 }
 
