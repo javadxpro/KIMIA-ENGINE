@@ -158,6 +158,25 @@ inline constexpr f64 kAiPassSkillWeight = 0.6;
 // without this a three-minute match reported 687 passes and 3996 tackles, which
 // would machine-gun any animation, sound or user rule hanging off them.
 inline constexpr f64 kAiTouchCooldown = 0.6;
+// How hard a keeper clears a caught ball (m/s), and how many seconds of the
+// ball's flight the keeper is allowed to read when choosing where to stand.
+// A keeper that only watches the ball's CURRENT position is a cone to run
+// around; one that reads the whole flight is a wall. The cap keeps the read
+// local (and the decision stable), the clear speed puts the ball back in play
+// instead of on the roof.
+inline constexpr f64 kAiKeeperClearSpeed = 9.0;
+inline constexpr f64 kAiKeeperPredict = 0.5;
+// When the other side has the ball, supporting players form a line this
+// fraction of the way from their own goal to the ball, instead of holding an
+// attacking shape around a ball they do not have.
+inline constexpr f64 kAiDefendLineFraction = 0.35;
+// Gait speed bands, as fractions of the profile's running speed, and the
+// deceleration that counts as "stopping" (m/s per second). Fractions, not
+// metres per second, so a fast profile sprints later than a slow one.
+inline constexpr f64 kGaitWalkFraction = 0.30;
+inline constexpr f64 kGaitRunFraction = 0.75;
+inline constexpr f64 kGaitStopDecel = 6.0;
+inline constexpr f64 kGaitBlendTime = 0.25;
 
 // --- Camera director (stage 28) ---
 // How fast the camera swings to follow the aim, 1/s.
@@ -675,6 +694,11 @@ public:
   // The middle of the net this team is shooting at. Falls back to the far
   // end of the pitch when the world has no goal built yet.
   Vec3 aiGoalMouth(u32 team) const;
+  // Half the width of the mouth that goal actually is (from the goal groups in
+  // the scene, or the medium default when the pitch has no nets). The keeper
+  // shuffles inside THIS, not inside some generic goal constant: standing
+  // outside your own posts is how a net ends up empty.
+  f64 aiGoalMouthHalf(u32 team) const;
 
   // The character each side has sent for the ball right now (0 = nobody).
   // Only one per team: the rest hold their shape instead of swarming.
@@ -749,7 +773,18 @@ public:
   // Every update() that shoots / kicks / scores / ends the round pushes one
   // event; the app drains them once per frame and plays the sounds it has.
   // Events survive until drained so a slow frame never loses one.
-  enum class GameEvent { Shot, Kick, Pass, Holed, Goal, RoundOver, Whistle, Tackle, Trick };
+  // How a character is moving, derived from their REAL velocity each frame
+  // (phase 5). Input never enters this: a player pinned against a wall at full
+  // input is Idle, an AI sprinting with no input at all is Sprint. Animation
+  // picks its clip and its speed from here, and the blend factor ramps 0..1
+  // over kGaitBlendTime after every change so a stop is a transition, not a
+  // cut.
+  enum class Gait { Idle, Walk, Run, Sprint, Stopping };
+  static const char* gaitStateName(Gait gait);
+  Gait gaitState(u32 id) const;
+  f64 gaitBlend(u32 id) const;  // 0 right after a change, 1 once settled
+
+  enum class GameEvent { Shot, Kick, Pass, Save, Holed, Goal, RoundOver, Whistle, Tackle, Trick };
   std::vector<GameEvent> drainEvents();
   // The trigger name a built-in event fires ("goal", "kick", ...), so a
   // component attached in the editor can respond to it with no code.
@@ -1278,6 +1313,13 @@ private:
   // Per-character jam detection: where it was, how long it has failed to
   // get anywhere, and how long it should keep sidestepping.
   std::map<u32, f64> aiTouchCooldown_;  // per player: seconds until the next touch event
+  // Gait bookkeeping (phase 5): last state, the blend ramp, and last frame's
+  // horizontal speed (Stopping is a deceleration, which needs a previous).
+  std::map<u32, Gait> gait_;
+  std::map<u32, f64> gaitBlend_;
+  std::map<u32, f64> gaitPrevSpeed_;
+  std::map<u32, Vec3> gaitPrevPos_;  // achieved speed = displacement, not asked speed
+  void updateGait(f64 seconds);
   std::map<u32, Vec3> aiLastPos_;
   std::map<u32, f64> aiStuckFor_;
   std::map<u32, f64> aiUnstickFor_;

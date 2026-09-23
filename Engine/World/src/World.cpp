@@ -456,6 +456,78 @@ void WorldEditor::spawnSquads() {
   }
 }
 
+const char* WorldEditor::gaitStateName(Gait gait) {
+  switch (gait) {
+    case Gait::Idle: return "idle";
+    case Gait::Walk: return "walk";
+    case Gait::Run: return "run";
+    case Gait::Sprint: return "sprint";
+    case Gait::Stopping: return "stopping";
+  }
+  return "idle";
+}
+
+WorldEditor::Gait WorldEditor::gaitState(u32 id) const {
+  const auto at = gait_.find(id);
+  return at == gait_.end() ? Gait::Idle : at->second;
+}
+
+f64 WorldEditor::gaitBlend(u32 id) const {
+  const auto at = gaitBlend_.find(id);
+  return at == gaitBlend_.end() ? 1.0 : at->second;
+}
+
+// How everybody is moving, from their REAL velocity (phase 5). Input never
+// enters this function: a player pinned to a wall at full input is Idle, an
+// AI crossing the pitch with no input at all is Sprint. Stopping is a
+// deceleration, which is why the previous frame's speed is remembered — a
+// sudden stop is a state of its own, and the blend ramp under it is what an
+// animation will one day cross-fade.
+void WorldEditor::updateGait(f64 seconds) {
+  const f64 run = world_.player.speed;
+  for (const u32 id : physics_.characterIds()) {
+    const CharacterBody* body = physics_.characterById(id);
+    if (body == nullptr) continue;
+    // Achieved speed, not asked speed: the body's displacement this frame.
+    // A player pinned against a wall at full input has a requested velocity
+    // and goes nowhere, and "Run" for a statue would be a lie — the first
+    // gait test is exactly that statue.
+    f64 speed = 0.0;
+    const auto pit = gaitPrevPos_.find(id);
+    if (pit != gaitPrevPos_.end()) {
+      const f64 mx = body->position.x - pit->second.x;
+      const f64 mz = body->position.z - pit->second.z;
+      speed = seconds > 0.0 ? std::sqrt(mx * mx + mz * mz) / seconds : 0.0;
+    } else {
+      speed = std::sqrt(body->velocity.x * body->velocity.x +
+                        body->velocity.z * body->velocity.z);
+    }
+    gaitPrevPos_[id] = body->position;
+    const f64 prev = gaitPrevSpeed_.count(id) > 0U ? gaitPrevSpeed_[id] : speed;
+    const f64 decel = seconds > 0.0 ? (prev - speed) / seconds : 0.0;
+    Gait next = Gait::Idle;
+    if (decel > kGaitStopDecel && prev > run * kGaitWalkFraction) {
+      next = Gait::Stopping;
+    } else if (speed < run * 0.10) {
+      next = Gait::Idle;
+    } else if (speed < run * kGaitWalkFraction) {
+      next = Gait::Walk;
+    } else if (speed < run * kGaitRunFraction) {
+      next = Gait::Run;
+    } else {
+      next = Gait::Sprint;
+    }
+    const auto at = gait_.find(id);
+    if (at == gait_.end() || at->second != next) {
+      gait_[id] = next;
+      gaitBlend_[id] = 0.0;  // a change starts a fresh blend, never a cut
+    } else if (gaitBlend_[id] < 1.0) {
+      gaitBlend_[id] = std::min(1.0, gaitBlend_[id] + seconds / kGaitBlendTime);
+    }
+    gaitPrevSpeed_[id] = speed;
+  }
+}
+
 u32 WorldEditor::teamScore(u32 team) const {
   if (team == 1U) return world_.scoreTeam1;
   if (team == 2U) return world_.scoreTeam2;
@@ -743,6 +815,16 @@ void WorldEditor::update(f64 hostSeconds) {
     const Vec3 previous = ballPosition();
     physics_.advance(hostSeconds);
 
+    // The human stays on the pitch too. The AI clamps itself in updateAi and
+    // the sandbox player's alias is clamped above, but in a match the human is
+    // a squad body that updateAi skips — so without this, holding a direction
+    // walked them clean through the boards and out of the street (a gait test
+    // caught them sprinting at z = 25 on a pitch eight metres long).
+    if (CharacterBody* human = physics_.characterById(kPrimaryCharacter)) {
+      human->position.x = std::min(boundX, std::max(-boundX, human->position.x));
+      human->position.z = std::min(boundZ, std::max(-boundZ, human->position.z));
+    }
+
     // The ball stays on the floor: clamp it inside the play area, and let the
     // boards give it back its outward speed as inward speed. Killing the
     // velocity here parks the ball ON the line, and a ball on the line cannot
@@ -847,6 +929,7 @@ void WorldEditor::update(f64 hostSeconds) {
     // Computer players move before the tricks resolve, so a defender who
     // arrives this frame can take the ball off a show-off in the same frame.
     updateAi(hostSeconds);
+    updateGait(hostSeconds);
 
     // Skill moves run on the same clock as everything else, after the
     // ball has been moved and clamped, so a trick that finishes this frame
@@ -2473,6 +2556,7 @@ const char* WorldEditor::eventTriggerName(GameEvent event) {
     case GameEvent::Shot: return "shot";
     case GameEvent::Kick: return "kick";
     case GameEvent::Pass: return "pass";
+    case GameEvent::Save: return "save";
     case GameEvent::Holed: return "holed";
     case GameEvent::Goal: return "goal";
     case GameEvent::RoundOver: return "roundover";

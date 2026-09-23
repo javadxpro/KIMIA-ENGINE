@@ -670,6 +670,8 @@ std::string handleApi(WorldEditor& editor, const std::string& path,
       out += "{\"id\":" + std::to_string(id);
       out += ",\"team\":" + std::to_string(editor.squadTeam(id));
       out += ",\"role\":" + quoted(WorldEditor::aiRoleName(editor.aiRole(id)));
+      out += ",\"gait\":" + quoted(WorldEditor::gaitStateName(editor.gaitState(id)));
+      out += ",\"gaitBlend\":" + number(editor.gaitBlend(id));
       out += ",\"action\":" + quoted(WorldEditor::aiActionName(decision.action));
       out += ",\"x\":" + number(editor.squadPosition(id).x);
       out += ",\"z\":" + number(editor.squadPosition(id).z);

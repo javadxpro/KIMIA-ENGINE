@@ -4287,12 +4287,14 @@ KIMIA_TEST(world_ai_makes_passes_and_scoring_chances_in_a_real_match) {
   i32 passes = 0;
   i32 shots = 0;
   i32 tackles = 0;
+  i32 saves = 0;
   for (i32 f = 0; f < 10800; ++f) {  // three minutes
     editor.update(1.0 / 60.0);
     for (const kimia::WorldEditor::GameEvent event : editor.drainEvents()) {
       if (event == kimia::WorldEditor::GameEvent::Pass) ++passes;
       if (event == kimia::WorldEditor::GameEvent::Kick) ++shots;
       if (event == kimia::WorldEditor::GameEvent::Tackle) ++tackles;
+      if (event == kimia::WorldEditor::GameEvent::Save) ++saves;
     }
   }
   KIMIA_REQUIRE(passes > 0);   // the ball moves between team-mates
@@ -4305,6 +4307,184 @@ KIMIA_TEST(world_ai_makes_passes_and_scoring_chances_in_a_real_match) {
   KIMIA_REQUIRE(tackles < 400);
   const u32 total = editor.teamScore(1U) + editor.teamScore(2U);
   KIMIA_REQUIRE(total > 0);    // a side actually scores, so the match is a game
+}
+
+KIMIA_TEST(world_the_keeper_reads_a_shot_and_saves_it) {
+  // A struck ball straight at the middle of the net must NOT be a goal when a
+  // keeper is home: the keeper reads the flight, gets across, and the save
+  // fires as an event of its own. Before the read existed this exact ball went
+  // in every time, which is the whole 0-17 scoreline in one sentence.
+  //
+  // The scenario is staged so the keeper is the ONLY possible answer: every
+  // field player (and the human) is parked out in a corner, the two keepers sit
+  // on their lines. What is under test is not who runs where — it is whether a
+  // ball travelling at 10 m/s at the net comes back out.
+  WorldEditor editor;
+  streetWithNets(editor);
+  editor.setAiSkill(0.6);
+  for (const u32 id : editor.squadIds()) {
+    if (id == kimia::kPrimaryCharacter) continue;
+    if (editor.aiRole(id) == kimia::WorldEditor::AiRole::Keeper) {
+      // On the line, in the middle: a keeper doing their job before the shot.
+      const f64 z = editor.squadPosition(id).z;
+      editor.setSquadPosition(id, Vec3{0.0, 0.0, z > 0.0 ? 6.5 : -6.5});
+    } else {
+      editor.setSquadPosition(id, Vec3{3.2, 0.0, 3.2});  // out of the lane
+    }
+  }
+  editor.setPlayerPosition(Vec3{-3.2, 0.0, 3.2});
+  editor.setMoveInput(0.0, 0.0);
+  // Four metres out, struck at the middle of the net at z = -7.5.
+  editor.setBallPosition(Vec3{0.0, 0.15, -4.0});
+  editor.setBallVelocity(Vec3{0.0, 0.0, -10.0});
+  bool saved = false;
+  for (i32 f = 0; f < 90; ++f) {
+    editor.update(1.0 / 60.0);
+    for (const kimia::WorldEditor::GameEvent event : editor.drainEvents()) {
+      if (event == kimia::WorldEditor::GameEvent::Save) saved = true;
+    }
+  }
+  KIMIA_REQUIRE(saved);
+  // And the proof that the save mattered: nobody scored from it.
+  KIMIA_REQUIRE(editor.teamScore(1U) + editor.teamScore(2U) == 0U);
+}
+
+KIMIA_TEST(world_a_full_match_stays_within_a_plausible_scoreline) {
+  // THE balance gate for KIMIA 0.30. Three minutes of five-a-side with an idle
+  // human used to end 1-11, then 0-17 in a sampled frame: keepers were scenery
+  // and the defence held an attacking shape around a ball it did not have.
+  // With a keeper that reads the shot and a line that drops goal-side, the
+  // same match has to land in football numbers — some goals, never a rout —
+  // and the keeper's work has to be visible as saves.
+  WorldEditor editor;
+  streetWithNets(editor);
+  editor.setAiSkill(0.6);
+  i32 saves = 0;
+  for (i32 f = 0; f < 10800; ++f) {
+    editor.update(1.0 / 60.0);
+    for (const kimia::WorldEditor::GameEvent event : editor.drainEvents()) {
+      if (event == kimia::WorldEditor::GameEvent::Save) ++saves;
+    }
+  }
+  const u32 total = editor.teamScore(1U) + editor.teamScore(2U);
+  KIMIA_REQUIRE(total >= 1U);  // a nil-nil stalemate is not football either
+  KIMIA_REQUIRE(total <= 6U);  // and 0-17 is not a match, it is a shooting drill
+  KIMIA_REQUIRE(saves >= 20);  // the scoreline has to come from kept balls
+}
+
+KIMIA_TEST(world_the_same_match_twice_is_the_same_match) {
+  // The determinism half of the 0.30 milestone: no RNG anywhere in the AI, so
+  // two identical worlds played identically must agree on everything that is
+  // not a rendering detail — score, touches, and the ball's final resting
+  // place, bit for bit. Replay (phase 7) will stand on exactly this.
+  u32 score1 = 0U, score2 = 0U;
+  i32 savesA = 0, savesB = 0;
+  kimia::Vec3 ballA{0.0, 0.0, 0.0}, ballB{0.0, 0.0, 0.0};
+  for (int run = 0; run < 2; ++run) {
+    WorldEditor editor;
+    streetWithNets(editor);
+    editor.setAiSkill(0.6);
+    i32 saves = 0;
+    for (i32 f = 0; f < 3600; ++f) {  // one minute is plenty, and twice as fast
+      editor.update(1.0 / 60.0);
+      for (const kimia::WorldEditor::GameEvent event : editor.drainEvents()) {
+        if (event == kimia::WorldEditor::GameEvent::Save) ++saves;
+      }
+    }
+    if (run == 0) {
+      score1 = editor.teamScore(1U) * 100U + editor.teamScore(2U);
+      savesA = saves;
+      ballA = editor.ballPosition();
+    } else {
+      score2 = editor.teamScore(1U) * 100U + editor.teamScore(2U);
+      savesB = saves;
+      ballB = editor.ballPosition();
+    }
+  }
+  KIMIA_REQUIRE(score1 == score2);
+  KIMIA_REQUIRE(savesA == savesB);
+  KIMIA_REQUIRE(ballA.x == ballB.x && ballA.y == ballB.y && ballA.z == ballB.z);
+}
+
+KIMIA_TEST(world_gait_follows_real_velocity_not_input) {
+  // Phase 5 starts here, and it starts with the honest part: the gait state is
+  // read off the body's velocity, never off the input. A human shoved into a
+  // wall at full input is standing still, so the state says Idle; meanwhile an
+  // AI player crossing the pitch with no input channel at all is running.
+  WorldEditor editor;
+  streetWithNets(editor);
+  // Walk the human into the end wall and hold the input there.
+  editor.setPlayerPosition(Vec3{0.0, 0.0, 7.6});
+  editor.setMoveInput(0.0, 1.0);
+  bool aiRan = false;
+  bool humanIdledAtWall = false;
+  for (i32 f = 0; f < 240; ++f) {
+    editor.update(1.0 / 60.0);
+    if (f > 120) {
+      const kimia::WorldEditor::Gait human = editor.gaitState(kimia::kPrimaryCharacter);
+      if (human == kimia::WorldEditor::Gait::Idle) humanIdledAtWall = true;
+      for (const u32 id : editor.squadIds()) {
+        const kimia::WorldEditor::Gait gait = editor.gaitState(id);
+        if (gait == kimia::WorldEditor::Gait::Run || gait == kimia::WorldEditor::Gait::Sprint) aiRan = true;
+      }
+    }
+  }
+  KIMIA_REQUIRE(humanIdledAtWall);  // full input, zero velocity: Idle
+  KIMIA_REQUIRE(aiRan);             // zero input, real velocity: Run/Sprint
+  // And the wall they idled at is a wall: held input must not leave the pitch
+  // (the bug this test caught: the match human had no boundary clamp).
+  KIMIA_REQUIRE(editor.squadPosition(kimia::kPrimaryCharacter).z < 8.5);
+  // And the wall they idled at is a wall: four minutes of held input must not
+  // leave the pitch (the bug this test caught: the match human had no clamp).
+  const kimia::Vec3 hp = editor.squadPosition(kimia::kPrimaryCharacter);
+  KIMIA_REQUIRE(hp.z < 8.5);
+}
+
+KIMIA_TEST(world_a_sudden_stop_passes_through_stopping_and_blends) {
+  // A stop is a state, not a cut. Running flat out and releasing the input has
+  // to pass through Stopping (the deceleration band), and every state change
+  // restarts the blend ramp from zero so an animation can cross-fade instead
+  // of snapping. The run happens in an open lane across the pitch: a sprint
+  // through the middle scrum would measure the traffic, not the legs.
+  WorldEditor editor;
+  streetWithNets(editor);
+  editor.setPlayerPosition(Vec3{-2.0, 0.0, 3.0});
+  editor.setMoveInput(1.0, 0.0);  // sprint across the open lane
+  bool runningAtRelease = false;
+  for (i32 f = 0; f < 40; ++f) {
+    editor.update(1.0 / 60.0);
+    if (f == 39) {
+      const kimia::WorldEditor::Gait gait = editor.gaitState(kimia::kPrimaryCharacter);
+      runningAtRelease = gait == kimia::WorldEditor::Gait::Run || gait == kimia::WorldEditor::Gait::Sprint;
+    }
+  }
+  KIMIA_REQUIRE(runningAtRelease);
+  // Settle: traffic or a band crossing can restart the blend ramp, so wait for
+  // a frame that is BOTH running and settled instead of assuming frame 40 is.
+  bool settled = false;
+  for (i32 f = 0; f < 90 && !settled; ++f) {
+    editor.update(1.0 / 60.0);
+    const kimia::WorldEditor::Gait gait = editor.gaitState(kimia::kPrimaryCharacter);
+    settled = editor.gaitBlend(kimia::kPrimaryCharacter) > 0.9 &&
+              (gait == kimia::WorldEditor::Gait::Run || gait == kimia::WorldEditor::Gait::Sprint);
+  }
+  KIMIA_REQUIRE(settled);
+
+  editor.setMoveInput(0.0, 0.0);  // let go: one frame of hard deceleration
+  bool stopped = false;
+  bool sawFreshBlend = false;
+  for (i32 f = 0; f < 12; ++f) {
+    editor.update(1.0 / 60.0);
+    if (editor.gaitState(kimia::kPrimaryCharacter) == kimia::WorldEditor::Gait::Stopping) {
+      stopped = true;
+      if (editor.gaitBlend(kimia::kPrimaryCharacter) < 0.9) sawFreshBlend = true;
+    }
+  }
+  KIMIA_REQUIRE(stopped);        // the deceleration band was entered
+  KIMIA_REQUIRE(sawFreshBlend);  // and the blend restarted under it
+  // Settled again: whatever the state now, its blend has finished ramping.
+  for (i32 f = 0; f < 30; ++f) editor.update(1.0 / 60.0);
+  KIMIA_REQUIRE(editor.gaitBlend(kimia::kPrimaryCharacter) > 0.9);
 }
 
 KIMIA_TEST(world_ai_shoots_from_close_range_and_carries_when_nothing_is_better) {

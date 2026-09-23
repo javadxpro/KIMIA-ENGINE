@@ -117,6 +117,19 @@ bool WorldEditor::aiHasPossession(u32 team) const {
 
 // The net this side is attacking. Team 1 shoots at the -Z goal, team 2 at
 // the +Z one (matching scoringTeamForGoalZ).
+f64 WorldEditor::aiGoalMouthHalf(u32 team) const {
+  const f64 forward = attackDirectionZ(team);
+  std::map<std::string, GoalGroup> goals;
+  scanGoals(world_.scene, goals);
+  for (const auto& entry : goals) {
+    const GoalGroup& goal = entry.second;
+    if (!goal.valid()) continue;
+    if (forward > 0.0 ? goal.z() <= 0.0 : goal.z() > 0.0) continue;
+    return goal.width() * 0.5;
+  }
+  return kWorldGoalMedium * 0.5;
+}
+
 Vec3 WorldEditor::aiGoalMouth(u32 team) const {
   const f64 forward = attackDirectionZ(team);
   // Default: the middle of the far goal line, in case no goal was built.
@@ -387,16 +400,30 @@ Vec3 WorldEditor::aiTargetFor(u32 id) const {
   const f64 forward = attackDirectionZ(team);
   const f64 ownGoalZ = -forward * world_.halfLength();
 
-  // --- Keeper: stay on the line, shuffle across to the ball ---
+  // --- Keeper: read the shot, hold the real mouth ---
   if (id == aiKeeper(team)) {
-    // A keeper tracks the ball sideways but never wanders far off the
-    // line: an empty net is worse than a shot saved.
-    const f64 postLimit = kWorldGoalLarge * 0.5;
-    const f64 x = std::min(postLimit, std::max(-postLimit, ball->position.x));
-    // Comes out a little when the ball is close, back on the line when not.
+    // Two old leaks, both measured in conceded goals. First, the lateral clamp
+    // was kWorldGoalLarge: on a pitch whose nets are narrower the keeper
+    // shuffled OUTSIDE their own posts and left the middle empty. The clamp is
+    // now the mouth this scene actually has, minus a body radius.
+    const Vec3 mouth = aiGoalMouth(team);
+    const f64 postLimit = std::max(0.2, aiGoalMouthHalf(team) - 0.25);
+    // Second, the keeper watched where the ball IS. A ball travelling at 9 m/s
+    // is already past that spot when the keeper arrives, so the keeper read
+    // the flight instead: where will the ball cross the keeper's line within
+    // the next kAiKeeperPredict seconds? A capped linear read, not prophecy —
+    // and deterministic, like everything else here.
     const f64 ballDepth = std::abs(ball->position.z - ownGoalZ);
     const f64 comeOut = ballDepth < kAiKeeperRange * 2.0 ? kAiKeeperRange : kAiKeeperRange * 0.35;
-    return Vec3{x, body->position.y, ownGoalZ + forward * comeOut};
+    const f64 keeperZ = ownGoalZ + forward * comeOut;
+    f64 x = ball->position.x;
+    const bool coming = forward > 0.0 ? ball->velocity.z > 0.0 : ball->velocity.z < 0.0;
+    if (coming && std::abs(ball->velocity.z) > kMoveEpsilon) {
+      const f64 t = std::min(kAiKeeperPredict, std::abs((keeperZ - ball->position.z) / ball->velocity.z));
+      x = ball->position.x + ball->velocity.x * t;
+    }
+    x = std::min(mouth.x + postLimit, std::max(mouth.x - postLimit, x));
+    return Vec3{x, body->position.y, keeperZ};
   }
 
   const f64 boundX = world_.halfWidth() - kPlayerMargin;
@@ -476,8 +503,22 @@ Vec3 WorldEditor::aiTargetFor(u32 id) const {
   // With the ball, push UP in support so there is an option ahead; without
   // it, drop goal-side and defend. A team that only ever sits behind the
   // ball never attacks.
-  const f64 gap = aiHasPossession(team) ? -kAiSupportGap * 0.5 : kAiSupportGap;
-  const f64 supportZ = ball->position.z - forward * gap;
+  f64 supportZ = 0.0;
+  const u32 opponents = team == 1U ? 2U : 1U;
+  if (aiHasPossession(team)) {
+    supportZ = ball->position.z + forward * kAiSupportGap * 0.5;
+  } else if (aiHasPossession(opponents)) {
+    // The other side has it: hold a LINE between our own goal and the ball
+    // instead of an attacking shape around a ball we do not have. Depth is a
+    // fraction of the way from goal to ball, and the lane leans ball-side so
+    // the line actually covers the side the danger is on. Without this a
+    // counter-attack ran at a defence scattered across the halfway line.
+    const f64 depth = std::abs(ball->position.z - ownGoalZ);
+    supportZ = ownGoalZ + forward * (depth * kAiDefendLineFraction + kAiSupportGap * 0.5);
+    lane = lane * 0.5 + ball->position.x * 0.5;
+  } else {
+    supportZ = ball->position.z - forward * kAiSupportGap;
+  }
   return Vec3{std::min(boundX, std::max(-boundX, lane)), body->position.y,
               std::min(limit, std::max(-limit, supportZ))};
 }
@@ -568,6 +609,28 @@ void WorldEditor::updateAi(f64 seconds) {
     // Keep them on the pitch, like the human.
     body->position.x = std::min(boundX, std::max(-boundX, body->position.x));
     body->position.z = std::min(boundZ, std::max(-boundZ, body->position.z));
+
+    // --- The save ---
+    // A keeper who gets within reach of the ball CATCHES it and clears it up
+    // the near side, once per touch. Before this the keeper was scenery: the
+    // ball bounced off their body and trickled in, which is how a five-a-side
+    // ended 0-17. The clear is aimed infield-and-wide on purpose — a save that
+    // drops the ball at the opponent's feet is not a save.
+    if (ball != nullptr && aiRole(id) == AiRole::Keeper && aiTouchCooldown_[id] <= 0.0) {
+      const f64 saveDx = ball->position.x - body->position.x;
+      const f64 saveDz = ball->position.z - body->position.z;
+      const f64 forwardK = attackDirectionZ(body->team);
+      const f64 ownZ = -forwardK * world_.halfLength();
+      const bool inOwnBox = std::abs(ball->position.z - ownZ) < kAiKeeperRange * 2.5;
+      if (inOwnBox && std::sqrt(saveDx * saveDx + saveDz * saveDz) < world_.ball.radius + kAiTackleReach) {
+        const f64 side = ball->position.x >= 0.0 ? 1.0 : -1.0;
+        const f64 clearLength = std::sqrt(1.0 + 0.5 * 0.5);
+        ball->velocity.x = side * 0.5 / clearLength * kAiKeeperClearSpeed;
+        ball->velocity.z = forwardK * 1.0 / clearLength * kAiKeeperClearSpeed;
+        events_.push_back(GameEvent::Save);
+        aiTouchCooldown_[id] = kAiTouchCooldown;
+      }
+    }
 
     // --- Carrying the ball ---
     // The player on the ball nudges it toward where it is running. Without
