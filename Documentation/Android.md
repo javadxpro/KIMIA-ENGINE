@@ -39,7 +39,7 @@
 
 ## دارایی‌های جاسازی‌شده
 
-بیلد با `KIMIA_EMBED_ASSETS=ON` انجام می‌شود؛ `Profiles/`، `Worlds/` و `Branding/` داخل `libkimia_jni.so` هستند و در اولین اجرا به `files/kimia_engine/<version>/` استخراج می‌شوند — APK هیچ فایل کناری لازم ندارد.
+بیلد با `KIMIA_EMBED_ASSETS=ON` انجام می‌شود؛ `Profiles/`، `Worlds/` و `Branding/` داخل `libkimia_engine.so` هستند و در اولین اجرا به `files/kimia_engine/<version>/` استخراج می‌شوند — APK هیچ فایل کناری لازم ندارد.
 
 ## گرفتن APK
 

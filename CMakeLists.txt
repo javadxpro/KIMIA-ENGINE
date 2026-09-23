@@ -320,6 +320,7 @@ add_executable(kimia_tests
     Tests/src/InputTests.cpp
     Tests/src/ProfileTests.cpp
     Tests/src/RuntimeTests.cpp
+    Tests/src/AndroidConfigTests.cpp
 )
 target_include_directories(kimia_tests PRIVATE Tests/include Engine/Core/include)
 target_link_libraries(kimia_tests PRIVATE kimia_core kimia_math kimia_assets kimia_scene kimia_physics kimia_profile kimia_app kimia_golf kimia_world kimia_raytracer kimia_view)
@@ -557,6 +558,12 @@ if(KIMIA_BUILD_ANDROID_JNI)
   add_library(kimia_jni SHARED
       Android/app/src/main/cpp/jni_glue.cpp
   )
+  # The soname is part of the Java contract: NativeEngine.java calls
+  # System.loadLibrary("kimia_engine"), so the file on the device has to be
+  # libkimia_engine.so whatever the CMake target is called. AndroidConfigTests
+  # pins this pair from both sides on every platform, because a mismatch here
+  # is an UnsatisfiedLinkError at launch that no compiling CI job can see.
+  set_target_properties(kimia_jni PROPERTIES OUTPUT_NAME "kimia_engine")
   # liblog (__android_log_print) and libandroid (ANativeWindow_*). Both are
   # system libraries on every Android device; EGL/GLES stay dlopen'd at
   # runtime so there is no build-time GPU dependency.
