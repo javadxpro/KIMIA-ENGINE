@@ -549,6 +549,96 @@ KIMIA_TEST(physics_character_wall_blocks_and_slides) {
   KIMIA_REQUIRE(near(world.character()->position.y, 0.5, 1e-6));  // never left the floor
 }
 
+KIMIA_TEST(physics_a_character_walks_up_a_kerb) {
+  // The street pitch has kerbs. A 25 cm one is stepped over, not walked into:
+  // the character ends up standing on the kerb top with its feet on it.
+  PhysicsWorld world;
+  world.addPlane(0.0);
+  world.addBox(Vec3{2.0, 0.125, 0.0}, Vec3{0.5, 0.125, 3.0});  // kerb, top face at y = 0.25
+  world.resetCharacter(Vec3{0.0, 0.5, 0.0});
+  KIMIA_REQUIRE(world.character()->stepHeight > 0.25);  // it is a step, not a wall
+  for (u32 i = 0; i < 120; ++i) world.moveCharacter(kDt, Vec3{2.0, 0.0, 0.0});
+  KIMIA_REQUIRE(world.character()->onGround);
+  KIMIA_REQUIRE(near(world.character()->position.y, 0.75, 1e-6));  // feet rest on 0.25
+  KIMIA_REQUIRE(world.character()->position.x > 1.5);              // and it is on the kerb
+  KIMIA_REQUIRE(world.character()->position.x < 2.5);
+}
+
+KIMIA_TEST(physics_a_character_is_stopped_by_a_wall_above_its_step_height) {
+  // Half a meter: taller than kCharacterStepHeight, so it is a wall. The
+  // character stays at the face instead of climbing it.
+  PhysicsWorld world;
+  world.addPlane(0.0);
+  world.addBox(Vec3{2.0, 0.25, 0.0}, Vec3{0.5, 0.25, 3.0});  // top face at y = 0.5
+  world.resetCharacter(Vec3{0.0, 0.5, 0.0});
+  for (u32 i = 0; i < 240; ++i) world.moveCharacter(kDt, Vec3{2.0, 0.0, 0.0});
+  KIMIA_REQUIRE(near(world.character()->position.x, 2.0 - 0.5 - 0.3, 1e-6));  // at the face
+  KIMIA_REQUIRE(near(world.character()->position.y, 0.5, 1e-6));              // still on the floor
+}
+
+KIMIA_TEST(physics_step_height_zero_walks_into_the_kerb_like_before) {
+  // The switch that keeps the pre-phase-4 behaviour available: with
+  // stepHeight = 0 the same kerb is a wall, which is what every older world
+  // and the existing wall-slide tests get.
+  PhysicsWorld world;
+  world.addPlane(0.0);
+  world.addBox(Vec3{2.0, 0.125, 0.0}, Vec3{0.5, 0.125, 3.0});
+  world.resetCharacter(Vec3{0.0, 0.5, 0.0});
+  world.character()->stepHeight = 0.0;
+  for (u32 i = 0; i < 240; ++i) world.moveCharacter(kDt, Vec3{2.0, 0.0, 0.0});
+  KIMIA_REQUIRE(near(world.character()->position.x, 2.0 - 0.5 - 0.3, 1e-6));
+  KIMIA_REQUIRE(near(world.character()->position.y, 0.5, 1e-6));
+}
+
+KIMIA_TEST(physics_a_character_does_not_step_while_airborne) {
+  // In mid-air a kerb is a wall: stepping is a grounded move, which is what
+  // makes a jump feel like it has weight instead of vacuuming the character
+  // over the next obstacle.
+  PhysicsWorld world;
+  world.addPlane(0.0);
+  world.addBox(Vec3{2.0, 0.125, 0.0}, Vec3{0.5, 0.125, 3.0});  // kerb top at 0.25
+  world.resetCharacter(Vec3{1.19, 0.6, 0.0});                  // feet at 0.1: in the air
+  KIMIA_REQUIRE(!world.character()->onGround);
+  world.moveCharacter(kDt, Vec3{2.0, 0.0, 0.0});
+  KIMIA_REQUIRE(!world.character()->onGround);
+  KIMIA_REQUIRE(world.character()->position.y <= 0.6 + 1e-9);   // never lifted
+  KIMIA_REQUIRE(world.character()->position.y > 0.55);          // only gravity moved it
+  KIMIA_REQUIRE(world.character()->position.x <= 1.2 + 1e-6);   // pushed back off the kerb
+}
+
+KIMIA_TEST(physics_a_character_does_not_step_without_headroom) {
+  // Stepping needs room for the whole body at the raised position. A low beam
+  // means the kerb stays a wall.
+  PhysicsWorld world;
+  world.addPlane(0.0);
+  world.addBox(Vec3{2.0, 0.125, 0.0}, Vec3{0.5, 0.125, 3.0});  // kerb top at 0.25
+  world.addBox(Vec3{1.0, 1.35, 0.0}, Vec3{1.5, 0.25, 0.5});    // beam: bottom at y = 1.1
+  world.resetCharacter(Vec3{0.0, 0.5, 0.0});
+  for (u32 i = 0; i < 240; ++i) world.moveCharacter(kDt, Vec3{2.0, 0.0, 0.0});
+  KIMIA_REQUIRE(near(world.character()->position.x, 2.0 - 0.5 - 0.3, 1e-6));
+  KIMIA_REQUIRE(near(world.character()->position.y, 0.5, 1e-6));
+}
+
+KIMIA_TEST(physics_a_character_walks_up_a_staircase) {
+  // Static geometry is axis-aligned boxes, so a ramp is a staircase. Three
+  // 25 cm steps in a row: the character climbs all three without jumping.
+  PhysicsWorld world;
+  world.addPlane(0.0);
+  world.addBox(Vec3{2.0, 0.125, 0.0}, Vec3{0.5, 0.125, 2.0});  // top 0.25
+  world.addBox(Vec3{3.0, 0.25, 0.0}, Vec3{0.5, 0.25, 2.0});    // top 0.50
+  world.addBox(Vec3{4.0, 0.375, 0.0}, Vec3{0.5, 0.375, 2.0});  // top 0.75
+  world.resetCharacter(Vec3{0.5, 0.5, 0.0});
+  // 210 steps at 2 m/s = 3.5 m, which puts the character in the middle of the
+  // third tread (it spans 3.5..4.5) without walking off the far end.
+  for (u32 i = 0; i < 210; ++i) {
+    world.moveCharacter(kDt, Vec3{2.0, 0.0, 0.0});
+    KIMIA_REQUIRE(world.character()->onGround);  // never fell, never flew
+    KIMIA_REQUIRE(near(world.character()->position.z, 0.0, 1e-9));  // never shoved sideways
+  }
+  KIMIA_REQUIRE(near(world.character()->position.x, 4.0, 0.2));        // on the third tread
+  KIMIA_REQUIRE(near(world.character()->position.y, 0.75 + 0.5, 1e-6));
+}
+
 KIMIA_TEST(physics_character_stops_at_dynamic_crate_face) {
   PhysicsWorld world;
   world.addPlane(0.0);

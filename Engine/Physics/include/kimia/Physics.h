@@ -78,6 +78,24 @@ struct StaticBox {
   Vec3 halfExtents{0.5, 0.5, 0.5};
 };
 
+// How high a grounded character steps in one move: a kerb, a stair riser, the
+// lip of a concrete block. Without it the only way over a 25 cm kerb is to
+// jump, and a player walking the street pitch stops dead at it. The move is
+// the classic three phases — up, across, drop back down — and it only commits
+// if it lands the character further along than the plain wall-slide did, so it
+// can never cost movement. It runs while onGround only: in mid-air a lump of
+// concrete is a wall, which is what makes jumping feel like it has weight.
+inline constexpr f64 kCharacterStepHeight = 0.35;
+
+// How much of a character's foot must be over a surface for that surface to
+// hold it up. The obvious rule — "the character's centre must be over the box"
+// — cannot express stepping onto a kerb at all: the character reaches the kerb
+// face with its centre 30 cm short of it, and a box can only advance a few
+// millimetres per frame, so it would never be "on top". A real controller asks
+// its physics engine "what is under my foot shape", and that is what this is:
+// support is a footprint overlap, and any overlap at least this big counts.
+inline constexpr f64 kCharacterGroundOverlap = 0.01;
+
 // Kinematic character: an axis-aligned capsule proxy the caller drives.
 // Gravity owns the vertical velocity; the caller supplies the desired
 // horizontal velocity. moveCharacter() collides and slides the body along
@@ -94,7 +112,12 @@ struct CharacterBody {
   // player of a sandbox world); 1 and 2 are the two sides of a match. The
   // physics layer only carries the number — the rules live in the game.
   u32 team = 0U;
+  // How high this character can step in one move (phase 4). See
+  // kCharacterStepHeight; 0 restores exactly the pre-step behaviour, which is
+  // what the older tests and any caller that wants a pure wall-slide ask for.
+  f64 stepHeight = kCharacterStepHeight;
 };
+
 
 // Falls faster than this are clamped so a slow frame cannot tunnel through
 // a one-unit obstacle (6 m/s * 0.1 s = 0.6 m per host frame).
@@ -345,6 +368,21 @@ private:
   void resolvePair(const Contact& contact, bool countContacts);
   void applyPairFriction(const Contact& contact);
   bool characterSupported(const CharacterBody& character, u32 selfId) const;
+  // Character-controller helpers (phase 4). `characterBlocked` answers "would
+  // the box be inside anything solid at this position?"; `characterGroundBelow`
+  // looks for the highest surface under the footprint, at most maxDrop below
+  // the feet, and reports where those feet would rest. `stepUp` is the
+  // up-across-down attempt described at kCharacterStepHeight.
+  bool characterBlocked(const CharacterBody& character, u32 selfId, const Vec3& position) const;
+  bool characterGroundBelow(const CharacterBody& character, u32 selfId, const Vec3& position,
+                            f64 maxDrop, f64& outFeet) const;
+  // `startPosition` is where the move began (before the wall-slide), so the
+  // step attempt replays the same dt from the same place rather than adding a
+  // second helping of movement on top of the slide.
+  bool characterStepUp(CharacterBody& character, u32 selfId, f64 dt, const Vec3& desiredVelocity,
+                       const Vec3& startPosition) const;
+  void characterCollideAndSlide(CharacterBody& character, u32 selfId, f64 dt) const;
+  void characterResolveVertical(CharacterBody& character, u32 selfId, f64 dt) const;
 
   f64 fixedDt_;
   FixedTimeStep accumulator_;

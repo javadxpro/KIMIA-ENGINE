@@ -424,9 +424,23 @@ void WorldEditor::updateAi(f64 seconds) {
         // Push it at the NET. Pushing it toward the player's own waypoint
         // sent it sideways or backwards, because that waypoint is a spot
         // beside the ball rather than somewhere to take it.
+        // A ball already ON the attacking end line with no net behind it has
+        // nowhere to go: aiGoalMouth falls back to a spot on the goal line when
+        // the scene has no goal, and a carrier pushing the ball at that spot
+        // drives it into the end boards and holds it there — the boards hand it
+        // back, the carrier pushes again, and the ball never moves again for the
+        // rest of the match. From the line the only place the ball can go is
+        // infield, so that is where the carrier plays it. Everywhere else the
+        // ball is pushed at the net exactly as before, net or no net: a pitch
+        // without nets is still a pitch, and the side still plays up it.
+        const f64 forward = attackDirectionZ(body->team);
+        const f64 endWall = world_.halfLength() - world_.ball.radius;
+        const bool atAttackingLine = forward > 0.0 ? ball->position.z > endWall - kAiWallEscape
+                                                   : ball->position.z < -(endWall - kAiWallEscape);
         const Vec3 want = aiGoalMouth(body->team);
-        const f64 towardX = want.x - ball->position.x;
-        const f64 towardZ = want.z - ball->position.z;
+        const bool stuck = atAttackingLine && !goalAtEnd(forward > 0.0);
+        const f64 towardX = stuck ? -ball->position.x : want.x - ball->position.x;
+        const f64 towardZ = stuck ? -ball->position.z : want.z - ball->position.z;
         const f64 towardLength = std::sqrt(towardX * towardX + towardZ * towardZ);
         if (towardLength > kMoveEpsilon) {
           // Close to the net: hit it. Dribbling all the way in gave the
@@ -466,13 +480,28 @@ void WorldEditor::updateAi(f64 seconds) {
     // match in one half and only one team could ever score.
     const f64 awayLength = std::sqrt(ballDx * ballDx + ballDz * ballDz);
     if (awayLength > kMoveEpsilon) {
-      // Clear it away, but bend the clearance back INFIELD. A defender on
-      // the touchline otherwise hammers the ball straight out for a
-      // throw-in every time, which on a narrow pitch stopped play almost
-      // continuously.
+      // Clear it away, but bend the clearance back INFIELD — on BOTH axes.
+      //
+      // The x term is the old fix for a defender on the touchline hammering the
+      // ball straight out for a throw-in every time, which on a narrow pitch
+      // stopped play almost continuously. The z term is the same bug at the
+      // other pair of walls, and it was worse than a throw-in: a defender who
+      // gets behind a ball near the end line clears it INTO the boards at full
+      // power, the boards hold it, and the same touch repeats every frame
+      // forever — the ball never moves again and the match freezes on the spot.
+      // Nobody can push a ball off the end line either, because that needs a
+      // player between the ball and the boards and the pitch ends first.
       const f64 infield = -ball->position.x / std::max(world_.halfWidth(), 1e-6);
+      // The z bend is only where it is needed — within a wall's reach of the
+      // boards. A bend applied across the whole pitch is not a wall fix, it is
+      // a bias: it pulls every clearance toward the centre spot, one half stops
+      // being played in, and the match goes one-way again (the test that guards
+      // the tackle's fairness caught exactly that).
+      const f64 endGap = (world_.halfLength() - kAiWallEscape) - std::abs(ball->position.z);
+      const f64 upfield = endGap >= 0.0 ? 0.0
+                                        : -std::copysign(std::min(-endGap / kAiWallEscape, 1.0), ball->position.z);
       f64 outX = ballDx / awayLength + infield;
-      f64 outZ = ballDz / awayLength;
+      f64 outZ = ballDz / awayLength + upfield;
       const f64 outLength = std::sqrt(outX * outX + outZ * outZ);
       if (outLength > kMoveEpsilon) {
         outX /= outLength;
@@ -481,8 +510,16 @@ void WorldEditor::updateAi(f64 seconds) {
       ball->velocity.x = outX * kAiTacklePush * skill;
       ball->velocity.z = outZ * kAiTacklePush * skill;
     } else {
-      // Dead on top of it: clear it toward the tackler's own attacking end.
-      ball->velocity.z = attackDirectionZ(body->team) * kAiTacklePush * skill;
+      // Dead on top of it: clear it toward the tackler's own attacking end —
+      // unless the ball is ALREADY there. A clearance aimed at the end the ball
+      // is sitting against is a clearance into the boards, and the boards hand
+      // it straight back to the same foot, which repeats every frame: that is
+      // the freeze this whole block has been chasing. From up against the end
+      // line the only way out is infield, so that is what this does.
+      const f64 toward = attackDirectionZ(body->team);
+      const f64 endWall = world_.halfLength() - world_.ball.radius;
+      const bool onTheLine = std::abs(ball->position.z) > endWall - kAiWallEscape;
+      ball->velocity.z = (onTheLine ? -toward : toward) * kAiTacklePush * skill;
     }
     events_.push_back(GameEvent::Tackle);
   }

@@ -24,6 +24,7 @@ using namespace worldinternal;  // the World module's own toolbox (see the heade
 const char* WorldEditor::stoppageName(Stoppage stoppage) {
   switch (stoppage) {
     case Stoppage::ThrowIn: return "THROW IN";
+    case Stoppage::GoalKick: return "GOAL KICK";
     case Stoppage::Offside: return "OFFSIDE";
     case Stoppage::Foul: return "FOUL";
     case Stoppage::None: break;
@@ -137,7 +138,7 @@ bool WorldEditor::offsideFor(u32 id) const {
 // Watches for the ball leaving the pitch and for reckless challenges.
 // `previousBall` is where the ball was before this frame's physics, so a
 // ball that shot out and got clamped back is still caught.
-void WorldEditor::updateRules(f64 seconds, const Vec3& previousBall) {
+void WorldEditor::updateRules(f64 seconds) {
   if (!world_.profile.rules) return;
 
   // --- Serving a stoppage ---
@@ -162,10 +163,11 @@ void WorldEditor::updateRules(f64 seconds, const Vec3& previousBall) {
   if (ball == nullptr) return;
 
   // --- Out of play: a touchline throw-in ---
-  // The ball is clamped inside the pitch by the play loop, so check where
-  // it WANTED to go rather than where it ended up.
+  // The play loop clamps the ball inside the pitch, so the only place the ball
+  // can be AT the touchline is the frame it got there — which is exactly the
+  // moment it went out.
   const f64 touchline = world_.halfWidth() - world_.ball.radius;
-  if (std::abs(previousBall.x) >= touchline - 1e-6 && std::abs(ball->position.x) >= touchline - 1e-6) {
+  if (std::abs(ball->position.x) >= touchline - 1e-6) {
     // Whoever did NOT put it out gets the throw. The player is team 1, so
     // if the player was the last to touch it, it is theirs.
     const f64 side = ball->position.x > 0.0 ? 1.0 : -1.0;
@@ -173,6 +175,39 @@ void WorldEditor::updateRules(f64 seconds, const Vec3& previousBall) {
     awardRestart(Stoppage::ThrowIn, team,
                  Vec3{side * (touchline - kRulesRestartInset), 0.0, ball->position.z});
     return;
+  }
+
+  // --- End line: the ball cannot live on it ---
+  //
+  // The play loop clamps the ball inside the pitch, so a ball driven at the
+  // end boards ends up resting ON the end line. Football has no such place:
+  // past the line it is a goal if the scene has a goal at that end and the
+  // ball went in its mouth (the capture above deals with that), and it is out
+  // of play otherwise. Leaving it there also deadlocks a match: a ball on the
+  // line cannot be pushed back out, because pushing needs a player behind it
+  // and the pitch ends first — all anyone can do is drive it further into the
+  // boards, which is how a game ends up with the ball inching along a wall for
+  // the rest of the clock.
+  const f64 endLine = world_.halfLength() - world_.ball.radius;
+  if (std::abs(ball->position.z) >= endLine - 1e-6) {
+    std::map<std::string, GoalGroup> goals;
+    scanGoals(world_.scene, goals);
+    bool inMouth = false;
+    for (const auto& entry : goals) {
+      const GoalGroup& goal = entry.second;
+      if (!goal.valid()) continue;
+      if ((goal.z() > 0.0) != (ball->position.z > 0.0)) continue;  // the other end
+      const bool behind = goal.z() > 0.0 ? ball->position.z > goal.z() : ball->position.z < goal.z();
+      if (behind && std::abs(ball->position.x - goal.x()) < goal.width() * 0.5) inMouth = true;
+    }
+    if (!inMouth) {
+      // A goal kick for the side defending that end. scoringTeamForGoalZ names
+      // the side that scores at this end, so the other side defends it.
+      const u32 defender = scoringTeamForGoalZ(ball->position.z) == 1U ? 2U : 1U;
+      const f64 spot = ball->position.z > 0.0 ? endLine - kRulesGoalKickInset : kRulesGoalKickInset - endLine;
+      awardRestart(Stoppage::GoalKick, defender, Vec3{0.0, 0.0, spot});
+      return;
+    }
   }
 
   // --- Offside ---

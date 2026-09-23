@@ -167,7 +167,7 @@ void PhysicsWorld::clear() {
   steps_ = 0U;
 }
 
-// --- Broad phase (phase 4) ---
+
 //
 // Sweep and prune along X. The bodies are sorted by the low edge of their AABB
 // and swept in that order: while a later body's low X edge is still behind the
@@ -680,11 +680,34 @@ bool characterBoxOverlaps(const Vec3& aPosition, const Vec3& aHalf, const Vec3& 
          std::abs(aPosition.z - bPosition.z) < aHalf.z + bHalf.z;
 }
 
+// How deep the character's box is inside `box` along one axis. <= 0 means the
+// two are apart on that axis.
+f64 characterAxisOverlap(const Vec3& position, const Vec3& half, const Vec3& boxCenter,
+                         const Vec3& boxHalf, i32 axis) {
+  if (axis == 0) return half.x + boxHalf.x - std::abs(position.x - boxCenter.x);
+  if (axis == 1) return half.y + boxHalf.y - std::abs(position.y - boxCenter.y);
+  return half.z + boxHalf.z - std::abs(position.z - boxCenter.z);
+}
+
 // After an axis move, push the character out of a box along that axis and
 // kill the velocity on it. axis: 0 = X, 1 = Y, 2 = Z.
+//
+// `before` is where the character stood on that axis before this move. Only a
+// penetration the move itself created is this axis' business. That guard is
+// what stops phantom pushes: a character snapped exactly to a face sits a
+// floating-point hair inside it (`3.0 - 2.2` is not `0.5 + 0.3`), and while
+// that hair divides out of an axis it did not move on, it used to make a
+// character standing on a stair tread get shoved sideways out of the next
+// riser. Resolving an overlap the move did not create is the bug, not the
+// precision.
 void characterResolveAxis(CharacterBody& character, const Vec3& boxCenter, const Vec3& boxHalf,
-                          i32 axis) {
+                          i32 axis, f64 before) {
   if (!characterBoxOverlaps(character.position, character.halfExtents, boxCenter, boxHalf)) return;
+  const f64 overlap = characterAxisOverlap(character.position, character.halfExtents, boxCenter, boxHalf, axis);
+  if (overlap <= 0.0) return;
+  if (overlap <= characterAxisOverlap(Vec3{before, before, before}, character.halfExtents, boxCenter, boxHalf, axis)) {
+    return;  // already there before the move: not this axis' doing
+  }
   f64* position = nullptr;
   f64 half = 0.0;
   f64 center = 0.0;
@@ -725,10 +748,13 @@ bool PhysicsWorld::characterSupported(const CharacterBody& character, u32 selfId
     if (std::abs(feet - pair.second.y) <= 1e-6) return true;
   }
   constexpr f64 kSupportTolerance = 1e-4;
+  // The character's foot print, not its centre: see kCharacterGroundOverlap.
   const auto supportedByBox = [&character, feet](const Vec3& center, const Vec3& half) {
     if (std::abs(feet - (center.y + half.y)) > kSupportTolerance) return false;
-    if (std::abs(character.position.x - center.x) > half.x - kSupportTolerance) return false;
-    if (std::abs(character.position.z - center.z) > half.z - kSupportTolerance) return false;
+    const f64 reachX = half.x + character.halfExtents.x - kCharacterGroundOverlap;
+    const f64 reachZ = half.z + character.halfExtents.z - kCharacterGroundOverlap;
+    if (std::abs(character.position.x - center.x) > reachX) return false;
+    if (std::abs(character.position.z - center.z) > reachZ) return false;
     return true;
   };
   for (const auto& pair : boxes_) {
@@ -808,6 +834,152 @@ void PhysicsWorld::moveCharacter(f64 dt, const Vec3& desiredVelocity) {
   moveCharacter(kPrimaryCharacter, dt, desiredVelocity);
 }
 
+void PhysicsWorld::characterCollideAndSlide(CharacterBody& character, u32 selfId, f64 dt) const {
+  // One axis at a time, so the character slides along a wall instead of
+  // sticking to a corner.
+  const f64 beforeX = character.position.x;
+  character.position.x += character.velocity.x * dt;
+  for (const auto& pair : boxes_) {
+    characterResolveAxis(character, pair.second.center, pair.second.halfExtents, 0, beforeX);
+  }
+  for (const auto& pair : dynamicBoxes_) {
+    characterResolveAxis(character, pair.second.position, pair.second.halfExtents, 0, beforeX);
+  }
+  for (const auto& pair : characters_) {
+    if (pair.first == selfId) continue;  // never collide with yourself
+    characterResolveAxis(character, pair.second.position, pair.second.halfExtents, 0, beforeX);
+  }
+
+  const f64 beforeZ = character.position.z;
+  character.position.z += character.velocity.z * dt;
+  for (const auto& pair : boxes_) {
+    characterResolveAxis(character, pair.second.center, pair.second.halfExtents, 2, beforeZ);
+  }
+  for (const auto& pair : dynamicBoxes_) {
+    characterResolveAxis(character, pair.second.position, pair.second.halfExtents, 2, beforeZ);
+  }
+  for (const auto& pair : characters_) {
+    if (pair.first == selfId) continue;
+    characterResolveAxis(character, pair.second.position, pair.second.halfExtents, 2, beforeZ);
+  }
+}
+
+void PhysicsWorld::characterResolveVertical(CharacterBody& character, u32 selfId, f64 dt) const {
+  // Land on top faces while falling, bump the head while rising.
+  const bool falling = character.velocity.y <= 0.0;
+  const f64 beforeY = character.position.y;
+  character.position.y += character.velocity.y * dt;
+  if (falling) {
+    for (const auto& pair : planes_) {
+      if (character.position.y - character.halfExtents.y < pair.second.y) {
+        character.position.y = pair.second.y + character.halfExtents.y;
+        character.velocity.y = 0.0;
+        character.onGround = true;
+        ++character.collisionCount;
+      }
+    }
+  }
+  for (const auto& pair : boxes_) {
+    characterResolveAxis(character, pair.second.center, pair.second.halfExtents, 1, beforeY);
+  }
+  for (const auto& pair : dynamicBoxes_) {
+    characterResolveAxis(character, pair.second.position, pair.second.halfExtents, 1, beforeY);
+  }
+  for (const auto& pair : characters_) {
+    if (pair.first == selfId) continue;
+    characterResolveAxis(character, pair.second.position, pair.second.halfExtents, 1, beforeY);
+  }
+  if (character.velocity.y == 0.0 && falling) character.onGround = true;
+}
+
+bool PhysicsWorld::characterBlocked(const CharacterBody& character, u32 selfId,
+                                   const Vec3& position) const {
+  for (const auto& pair : planes_) {
+    if (position.y - character.halfExtents.y < pair.second.y) return true;
+  }
+  const auto blockedByBox = [&character, &position](const Vec3& center, const Vec3& half) {
+    return characterBoxOverlaps(position, character.halfExtents, center, half);
+  };
+  for (const auto& pair : boxes_) {
+    if (blockedByBox(pair.second.center, pair.second.halfExtents)) return true;
+  }
+  for (const auto& pair : dynamicBoxes_) {
+    if (blockedByBox(pair.second.position, pair.second.halfExtents)) return true;
+  }
+  for (const auto& pair : characters_) {
+    if (pair.first == selfId) continue;
+    if (blockedByBox(pair.second.position, pair.second.halfExtents)) return true;
+  }
+  return false;
+}
+
+bool PhysicsWorld::characterGroundBelow(const CharacterBody& character, u32 selfId,
+                                       const Vec3& position, f64 maxDrop, f64& outFeet) const {
+  constexpr f64 kTolerance = 1e-6;
+  const f64 feet = position.y - character.halfExtents.y;
+  bool found = false;
+  f64 best = 0.0;
+  const auto consider = [&](f64 top, f64 centerX, f64 centerZ, f64 halfX, f64 halfZ) {
+    if (top > feet + kTolerance) return;     // that surface is above the feet
+    if (top < feet - maxDrop) return;        // further down than we may drop
+    // Under the foot print: see kCharacterGroundOverlap.
+    const f64 reachX = halfX + character.halfExtents.x - kCharacterGroundOverlap;
+    const f64 reachZ = halfZ + character.halfExtents.z - kCharacterGroundOverlap;
+    if (std::abs(position.x - centerX) > reachX) return;
+    if (std::abs(position.z - centerZ) > reachZ) return;
+    if (found && top <= best) return;
+    best = top;
+    found = true;
+  };
+  for (const auto& pair : planes_) consider(pair.second.y, position.x, position.z, 1.0, 1.0);
+  for (const auto& pair : boxes_) {
+    consider(pair.second.center.y + pair.second.halfExtents.y, pair.second.center.x, pair.second.center.z,
+             pair.second.halfExtents.x, pair.second.halfExtents.z);
+  }
+  for (const auto& pair : dynamicBoxes_) {
+    consider(pair.second.position.y + pair.second.halfExtents.y, pair.second.position.x,
+             pair.second.position.z, pair.second.halfExtents.x, pair.second.halfExtents.z);
+  }
+  for (const auto& pair : characters_) {
+    if (pair.first == selfId) continue;
+    consider(pair.second.position.y + pair.second.halfExtents.y, pair.second.position.x,
+             pair.second.position.z, pair.second.halfExtents.x, pair.second.halfExtents.z);
+  }
+  outFeet = best;
+  return found;
+}
+
+bool PhysicsWorld::characterStepUp(CharacterBody& character, u32 selfId, f64 dt,
+                                  const Vec3& desiredVelocity, const Vec3& startPosition) const {
+  CharacterBody trial = character;
+  trial.position = startPosition;
+  trial.position.y += character.stepHeight;  // phase one: straight up
+  if (characterBlocked(trial, selfId, trial.position)) return false;  // no headroom
+  trial.velocity.x = desiredVelocity.x;  // the wall may have eaten these
+  trial.velocity.z = desiredVelocity.z;
+  trial.velocity.y = 0.0;
+  characterCollideAndSlide(trial, selfId, dt);  // phase two: across
+  f64 top = 0.0;
+  // Phase three: drop back onto whatever is under the lifted feet. The drop is
+  // the step height plus a hair, so a surface the character could not have
+  // reached is not a step.
+  if (!characterGroundBelow(trial, selfId, trial.position, character.stepHeight + 1e-3, top)) return false;
+  trial.position.y = top + trial.halfExtents.y;
+  trial.velocity.y = 0.0;
+  trial.onGround = true;
+  const auto progress = [&startPosition](const Vec3& position) {
+    const f64 dx = position.x - startPosition.x;
+    const f64 dz = position.z - startPosition.z;
+    return dx * dx + dz * dz;
+  };
+  if (progress(trial.position) <= progress(character.position) + 1e-9) return false;  // no gain, no step
+  // The step still touched something on the way; keep counting it so callers
+  // that watch collisionCount see the kerb they walked into.
+  trial.collisionCount = character.collisionCount;
+  character = trial;
+  return true;
+}
+
 void PhysicsWorld::moveCharacter(u32 id, f64 dt, const Vec3& desiredVelocity) {
   CharacterBody* self = characterById(id);
   if (self == nullptr) return;
@@ -821,56 +993,15 @@ void PhysicsWorld::moveCharacter(u32 id, f64 dt, const Vec3& desiredVelocity) {
     character.velocity.y = std::max(character.velocity.y - kGravity * dt, -kMaxCharacterFallSpeed);
   }
 
-  // Collide-and-slide: one axis at a time, so the character slides along
-  // walls instead of sticking to corners.
-  character.position.x += character.velocity.x * dt;
-  for (const auto& pair : boxes_) {
-    characterResolveAxis(character, pair.second.center, pair.second.halfExtents, 0);
+  const bool wasGrounded = character.onGround;
+  const Vec3 startPosition = character.position;
+  characterCollideAndSlide(character, id, dt);
+  characterResolveVertical(character, id, dt);
+  // Stepping (phase 4): something stopped the ground move short — try to walk up
+  // over it instead of into it.
+  if (wasGrounded && character.stepHeight > 0.0 && character.collisionCount > 0U) {
+    characterStepUp(character, id, dt, desiredVelocity, startPosition);
   }
-  for (const auto& pair : dynamicBoxes_) {
-    characterResolveAxis(character, pair.second.position, pair.second.halfExtents, 0);
-  }
-  for (const auto& pair : characters_) {
-    if (pair.first == id) continue;  // never collide with yourself
-    characterResolveAxis(character, pair.second.position, pair.second.halfExtents, 0);
-  }
-
-  character.position.z += character.velocity.z * dt;
-  for (const auto& pair : boxes_) {
-    characterResolveAxis(character, pair.second.center, pair.second.halfExtents, 2);
-  }
-  for (const auto& pair : dynamicBoxes_) {
-    characterResolveAxis(character, pair.second.position, pair.second.halfExtents, 2);
-  }
-  for (const auto& pair : characters_) {
-    if (pair.first == id) continue;
-    characterResolveAxis(character, pair.second.position, pair.second.halfExtents, 2);
-  }
-
-  // Vertical: land on top faces while falling, bump the head while rising.
-  const bool falling = character.velocity.y <= 0.0;
-  character.position.y += character.velocity.y * dt;
-  if (falling) {
-    for (const auto& pair : planes_) {
-      if (character.position.y - character.halfExtents.y < pair.second.y) {
-        character.position.y = pair.second.y + character.halfExtents.y;
-        character.velocity.y = 0.0;
-        character.onGround = true;
-        ++character.collisionCount;
-      }
-    }
-  }
-  for (const auto& pair : boxes_) {
-    characterResolveAxis(character, pair.second.center, pair.second.halfExtents, 1);
-  }
-  for (const auto& pair : dynamicBoxes_) {
-    characterResolveAxis(character, pair.second.position, pair.second.halfExtents, 1);
-  }
-  for (const auto& pair : characters_) {
-    if (pair.first == id) continue;
-    characterResolveAxis(character, pair.second.position, pair.second.halfExtents, 1);
-  }
-  if (character.velocity.y == 0.0 && falling) character.onGround = true;
   // Standing still: verify the support is still there (walking off an edge
   // must drop the character).
   if (character.onGround && !characterSupported(character, id)) character.onGround = false;

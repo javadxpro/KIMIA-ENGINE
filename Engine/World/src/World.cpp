@@ -7,6 +7,8 @@
 #include <kimia/WorldIO.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -129,6 +131,13 @@ void WorldEditor::rebuildPhysics() {
   crateBodyIds_.clear();
   std::map<std::string, GoalGroup> goals;
   scanGoals(world_.scene, goals);
+  // Where the goals are, so the AI knows whether it has a net to shoot at.
+  goalAtPlusEnd_ = false;
+  goalAtMinusEnd_ = false;
+  for (const auto& entry : goals) {
+    if (!entry.second.valid()) continue;
+    (entry.second.z() > 0.0 ? goalAtPlusEnd_ : goalAtMinusEnd_) = true;
+  }
   world_.scene.forEach([this](EntityHandle, const EntityData& entity) {
     // A body COMPONENT wins over the name (stage 31). Until now what an
     // object did was decided entirely by what it was called: "Crate_*" was
@@ -590,17 +599,17 @@ void WorldEditor::update(f64 hostSeconds) {
       const f64 ballBoundZ = world_.halfLength() - world_.ball.radius;
       if (ball->position.x > ballBoundX) {
         ball->position.x = ballBoundX;
-        if (ball->velocity.x > 0.0) ball->velocity.x = 0.0;
+        if (ball->velocity.x > 0.0) ball->velocity.x = -ball->velocity.x * kWorldBoardRestitution;
       } else if (ball->position.x < -ballBoundX) {
         ball->position.x = -ballBoundX;
-        if (ball->velocity.x < 0.0) ball->velocity.x = 0.0;
+        if (ball->velocity.x < 0.0) ball->velocity.x = -ball->velocity.x * kWorldBoardRestitution;
       }
       if (ball->position.z > ballBoundZ) {
         ball->position.z = ballBoundZ;
-        if (ball->velocity.z > 0.0) ball->velocity.z = 0.0;
+        if (ball->velocity.z > 0.0) ball->velocity.z = -ball->velocity.z * kWorldBoardRestitution;
       } else if (ball->position.z < -ballBoundZ) {
         ball->position.z = -ballBoundZ;
-        if (ball->velocity.z < 0.0) ball->velocity.z = 0.0;
+        if (ball->velocity.z < 0.0) ball->velocity.z = -ball->velocity.z * kWorldBoardRestitution;
       }
       // Rolling is over below the stop speed: the ball rests for the next shot.
       if (!resting && ball->velocity.length() < kWorldShotStopSpeed && ball->position.y <= world_.ball.radius + 1e-3) {
@@ -727,25 +736,28 @@ void WorldEditor::update(f64 hostSeconds) {
     const Vec3 previous = ballPosition();
     physics_.advance(hostSeconds);
 
-    // The ball stays on the floor: clamp it inside the play area and stop
-    // any outward motion so it can never roll away forever.
+    // The ball stays on the floor: clamp it inside the play area, and let the
+    // boards give it back its outward speed as inward speed. Killing the
+    // velocity here parks the ball ON the line, and a ball on the line cannot
+    // be played: pushing it back into play needs a player between the ball and
+    // the boards, and the pitch ends first.
     SphereBody* ball = physics_.sphere(ballId_);
     const f64 ballBoundX = world_.halfWidth() - world_.ball.radius;
     const f64 ballBoundZ = world_.halfLength() - world_.ball.radius;
     if (ball != nullptr) {
       if (ball->position.x > ballBoundX) {
         ball->position.x = ballBoundX;
-        if (ball->velocity.x > 0.0) ball->velocity.x = 0.0;
+        if (ball->velocity.x > 0.0) ball->velocity.x = -ball->velocity.x * kWorldBoardRestitution;
       } else if (ball->position.x < -ballBoundX) {
         ball->position.x = -ballBoundX;
-        if (ball->velocity.x < 0.0) ball->velocity.x = 0.0;
+        if (ball->velocity.x < 0.0) ball->velocity.x = -ball->velocity.x * kWorldBoardRestitution;
       }
       if (ball->position.z > ballBoundZ) {
         ball->position.z = ballBoundZ;
-        if (ball->velocity.z > 0.0) ball->velocity.z = 0.0;
+        if (ball->velocity.z > 0.0) ball->velocity.z = -ball->velocity.z * kWorldBoardRestitution;
       } else if (ball->position.z < -ballBoundZ) {
         ball->position.z = -ballBoundZ;
-        if (ball->velocity.z < 0.0) ball->velocity.z = 0.0;
+        if (ball->velocity.z < 0.0) ball->velocity.z = -ball->velocity.z * kWorldBoardRestitution;
       }
     }
 
@@ -822,7 +834,7 @@ void WorldEditor::update(f64 hostSeconds) {
     // The laws of the game (stage 29), checked against where the ball was
     // BEFORE physics so a ball that shot out and got clamped back is still
     // spotted. While play is stopped this holds the ball on the spot.
-    updateRules(hostSeconds, previous);
+    updateRules(hostSeconds);
     if (playStopped()) return;
 
     // Computer players move before the tricks resolve, so a defender who
@@ -861,7 +873,16 @@ void WorldEditor::update(f64 hostSeconds) {
       const f64 dx = crate->position.x - playerPos_.x;
       const f64 dz = crate->position.z - playerPos_.z;
       const f64 distance = std::sqrt(dx * dx + dz * dz);
-      const f64 contact = crateHalf + kWorldPlayerRadius;
+      // The shove has to keep up with the walk. Pinning the crate at the bare
+      // contact distance puts it inside the character's next step, and the
+      // character controller then pushes the player back out of it: shoving a
+      // crate cost the player a quarter of its speed. The pin therefore leads
+      // by one frame of walking, so the next step lands exactly on the contact
+      // and never inside it. Standing still (moveVelocity_ = 0) gives the old
+      // bare distance, which is all a stationary player needs.
+      const f64 frameReach = std::sqrt(moveVelocity_.x * moveVelocity_.x + moveVelocity_.z * moveVelocity_.z) *
+                             hostSeconds;
+      const f64 contact = crateHalf + kWorldPlayerRadius + frameReach;
       if (distance < contact) {
         Vec3 pushNormal{1.0, 0.0, 0.0};
         if (distance > kMoveEpsilon) {
@@ -894,17 +915,27 @@ void WorldEditor::update(f64 hostSeconds) {
       }
       return;
     }
-    // Goal capture: the ball crosses a goal plane going -Z, inside the
-    // posts and below the bar.
+    // Goal capture: the ball crosses a goal plane (either way — the end it
+    // crossed decides who is credited), inside the posts and below the bar.
+    //
+    // Crossing is an EVENT, and an event can be missed: a character's contact
+    // push and the end-wall clamp both move the ball without a physics step,
+    // and the frame in which it crossed can be swallowed by either. A real goal
+    // — two posts and a bar, an open mouth — is therefore also a STATE: a ball
+    // behind the plane and inside the mouth is in the net, and the net is a
+    // goal however it got there. The solid-box goal keeps the event test alone,
+    // because a ball cannot get inside one: a ball past its plane is a ball
+    // against its front face, which is not a goal.
     std::map<std::string, GoalGroup> goals;
     scanGoals(world_.scene, goals);
     for (const auto& entry : goals) {
       const GoalGroup& goal = entry.second;
       if (!goal.valid()) continue;
+      const bool inMouth = std::abs(position.x - goal.x()) < goal.width() * 0.5 && position.y < goal.height();
       const bool crossedToward = previous.z >= goal.z() && position.z < goal.z();
       const bool crossedBack = matchMode() && previous.z <= goal.z() && position.z > goal.z();
-      if ((crossedToward || crossedBack) && std::abs(position.x - goal.x()) < goal.width() * 0.5 &&
-          position.y < goal.height()) {
+      const bool inNet = goal.hasPosts && inMouth && (goal.z() > 0.0 ? position.z > goal.z() : position.z < goal.z());
+      if ((crossedToward || crossedBack || inNet) && inMouth) {
         creditGoal(scoringTeamForGoalZ(goal.z()));
         screen_ = Screen::Goal;
         goalTimer_ = kGoalCelebration;

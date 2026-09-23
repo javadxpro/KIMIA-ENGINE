@@ -790,12 +790,25 @@ KIMIA_TEST(world_ball_cannot_leave_floor) {
   editor.setPlayerPosition(Vec3{-9.0, 0.5, 0.0});  // far away: no contact
   editor.setBallPosition(Vec3{9.0, kGolfBallRadius, 0.0});
   editor.setBallVelocity(Vec3{10.0, 0.0, 0.0});  // blasted at the boundary
-  for (i32 i = 0; i < 120; ++i) editor.update(1.0 / 60.0);  // 2 s
+  const f64 bound = kimia::kWorldFloorHalf - kGolfBallRadius;
+  f64 furthest = 0.0;
+  for (i32 i = 0; i < 120; ++i) {  // 2 s
+    editor.update(1.0 / 60.0);
+    furthest = std::max(furthest, std::abs(editor.ballPosition().x));
+  }
   const Vec3 position = editor.ballPosition();
-  // The ball stops exactly at the floor edge, no outward speed left.
-  KIMIA_REQUIRE(near(position.x, kimia::kWorldFloorHalf - kGolfBallRadius, 1e-9));
+  // The ball never leaves the floor area — checked EVERY frame now, not only
+  // at the end, so this is strictly stronger than the old single-point check.
+  KIMIA_REQUIRE(furthest <= bound + 1e-9);
+  KIMIA_REQUIRE(furthest > bound - 0.02);  // and it really did reach the edge
   KIMIA_REQUIRE(position.z == 0.0);
-  KIMIA_REQUIRE(editor.ballVelocity().x == 0.0);
+  // The edge is a board, not glue: the ball comes back into the pitch instead
+  // of parking on the line with a dead velocity (which is where nothing could
+  // ever be done with it again — see world_boards_alone_keep_the_ball_moving).
+  KIMIA_REQUIRE(position.x < bound - 0.5);
+  // The boards are not perfectly elastic: a ball blasted at them comes back
+  // slower than it left, so a ping-pong between the walls always dies out.
+  KIMIA_REQUIRE(editor.ballVelocity().length() < 10.0);
 }
 
 KIMIA_TEST(world_catalog_places_crate) {
@@ -1117,9 +1130,23 @@ KIMIA_TEST(world_profile_field_bounds_player_ball_and_ghost) {
 
   editor.setBallPosition(Vec3{0.0, kWorldFantasyRadius, 0.0});
   editor.setBallVelocity(Vec3{10.0, 0.0, 0.0});
-  for (i32 i = 0; i < 120; ++i) editor.update(1.0 / 60.0);
-  KIMIA_REQUIRE(near(editor.ballPosition().x, 2.5 - kWorldFantasyRadius, 1e-9));
-  KIMIA_REQUIRE(editor.ballVelocity().x == 0.0);
+  const f64 ballEdge = 2.5 - kWorldFantasyRadius;  // street profile: half width 2.5
+  f64 furthestBall = 0.0;
+  for (i32 i = 0; i < 120; ++i) {
+    editor.update(1.0 / 60.0);
+    furthestBall = std::max(furthestBall, std::abs(editor.ballPosition().x));
+  }
+  // The profile's half width holds the ball in — checked every frame — and the
+  // board sends it back instead of parking it on the line.
+  KIMIA_REQUIRE(furthestBall <= ballEdge + 1e-9);
+  KIMIA_REQUIRE(furthestBall > ballEdge - 0.02);
+  KIMIA_REQUIRE(editor.ballPosition().x < ballEdge - 0.5);
+  // On a street pitch 5 m wide a 10 m/s blast crosses the whole width, so the
+  // ball can be on its way back out again by the time this runs — what must
+  // hold is that it is inside and that it is slower than it was fired: the
+  // boards absorb, they never add.
+  KIMIA_REQUIRE(std::abs(editor.ballPosition().x) < ballEdge);
+  KIMIA_REQUIRE(editor.ballVelocity().length() < 10.0);
 }
 
 KIMIA_TEST(world_profile_kick_and_jump_tuning_apply_in_play) {
@@ -4122,6 +4149,123 @@ KIMIA_TEST(world_ai_tackle_clears_the_ball_instead_of_always_one_way) {
   // nothing like the old 92% one-way drift.
   KIMIA_REQUIRE(share > 0.15);
   KIMIA_REQUIRE(share < 0.85);
+}
+
+KIMIA_TEST(world_a_ball_on_the_end_line_is_a_goal_kick) {
+  // The play loop clamps the ball inside the pitch, so a ball driven at the end
+  // boards reaches the end line. Past that line, football has exactly two
+  // answers — a goal if it is in the net, out of play otherwise — and leaving it
+  // on the line is not one of them: nobody can push it back into play, because
+  // that needs a player between the ball and the boards and the pitch ends
+  // first. On a pitch with rules the answer is a goal kick.
+  WorldEditor editor;
+  grassInPlay(editor);  // a grass fixture with a ball, and the AI switched off
+  KIMIA_REQUIRE(editor.rulesEnabled());
+  const f64 endLine = editor.world().halfLength() - editor.world().ball.radius;
+  editor.setPlayerPosition(Vec3{0.0, 0.5, 0.0});
+  // Outside any goal mouth, right on the line, and not moving.
+  editor.setBallPosition(Vec3{6.0, editor.world().ball.radius, endLine});
+  editor.setBallVelocity(Vec3{0.0, 0.0, 0.0});
+  editor.update(1.0 / 60.0);
+  KIMIA_REQUIRE(editor.playStopped());
+  KIMIA_REQUIRE(std::string(WorldEditor::stoppageName(editor.stoppage())) == "GOAL KICK");
+  // And the restart really happens: the ball goes live again off the line.
+  for (i32 i = 0; i < 120 && editor.playStopped(); ++i) editor.update(1.0 / 60.0);
+  KIMIA_REQUIRE(!editor.playStopped());
+  KIMIA_REQUIRE(editor.ballPosition().z < endLine - 1.0);
+}
+
+KIMIA_TEST(world_the_boards_bounce_the_ball_back_into_play) {
+  // The pitch is a street cage, so the boards are boards: a ball that hits them
+  // comes back. Killing the velocity instead pinned the ball ON the line, where
+  // nothing can be done with it — see world_a_ball_on_the_end_line_is_a_goal_kick.
+  WorldEditor editor;
+  streetAtTheFeet(editor);  // no nets, no rules: a sandbox kickabout
+  const f64 bound = editor.world().halfLength() - editor.world().ball.radius;
+  editor.setPlayerPosition(Vec3{0.0, 0.5, 0.0});
+  editor.setBallPosition(Vec3{0.0, editor.world().ball.radius, bound - 0.6});
+  editor.setBallVelocity(Vec3{0.0, 0.0, 6.0});
+  f64 furthest = editor.ballPosition().z;
+  i32 bounced = -1;
+  for (i32 i = 0; i < 120; ++i) {
+    editor.update(1.0 / 60.0);
+    furthest = std::max(furthest, editor.ballPosition().z);
+    if (bounced < 0 && editor.ballVelocity().z < 0.0) {
+      bounced = i;
+      break;
+    }
+  }
+  KIMIA_REQUIRE(bounced >= 0);                  // the boards answered
+  KIMIA_REQUIRE(furthest <= bound + 1e-9);      // and the ball never left the pitch
+  KIMIA_REQUIRE(furthest > bound - 0.02);       // it really did reach them
+  KIMIA_REQUIRE(editor.ballVelocity().z < 0.0); // off the boards, back in
+  for (i32 i = 0; i < 10; ++i) editor.update(1.0 / 60.0);
+  KIMIA_REQUIRE(editor.ballPosition().z < bound - 0.05);
+}
+
+KIMIA_TEST(world_boards_alone_keep_the_ball_moving) {
+  // Isolated from the AI on purpose. The other board test runs with a full
+  // squad, which can rescue the ball by itself, so it cannot tell a board that
+  // bounces from a board that glues. This world is a bare pitch: ground, ball,
+  // no nets, no rules, nobody to run after it. The boundary is the only thing
+  // that can give the ball its velocity back, and it has to.
+  WorldEditor editor = editorWithWorld();  // street: rules off, no players
+  addBall(editor, 0, Vec3{0.0, 0.0, 0.0});
+  exitPlace(editor);
+  editor.choose(3);  // PLAY
+  KIMIA_REQUIRE(editor.playing());
+  KIMIA_REQUIRE(editor.squadCount() == 1U);  // only the human: nobody to help
+  const f64 bound = editor.world().halfLength() - editor.world().ball.radius;
+  editor.setPlayerPosition(Vec3{0.0, 0.5, 0.0});
+  editor.setBallPosition(Vec3{0.0, editor.world().ball.radius, bound - 0.2});
+  editor.setBallVelocity(Vec3{0.0, 0.0, 6.0});
+  f64 furthest = editor.ballPosition().z;
+  i32 bounced = -1;
+  for (i32 i = 0; i < 60; ++i) {
+    editor.update(1.0 / 60.0);
+    furthest = std::max(furthest, editor.ballPosition().z);
+    if (bounced < 0 && editor.ballVelocity().z < 0.0) bounced = i;  // the board answered
+  }
+  KIMIA_REQUIRE(bounced >= 0);
+  KIMIA_REQUIRE(furthest <= bound + 1e-9);  // the ball never left the pitch
+  KIMIA_REQUIRE(furthest > bound - 0.02);   // and it really did reach the board
+  // It came back into the pitch rather than parking on the line. Half a metre is
+  // not just a twitch: friction on this pitch brings a 6 m/s ball to rest after
+  // about a metre, and it has to spend that metre going the right way.
+  KIMIA_REQUIRE(editor.ballPosition().z < bound - 0.5);
+}
+
+KIMIA_TEST(world_a_ball_in_the_net_scores_even_without_a_crossing) {
+  // A real goal is two posts and a bar with an open mouth. Crossing its plane is
+  // an EVENT, and the event can be swallowed: a character's contact push and the
+  // end-wall clamp both move the ball without a physics step. The net, however,
+  // is a STATE — a ball behind the plane inside the mouth is in the net, and the
+  // net is a goal however it got there.
+  const std::string text =
+      "# KIMIA scene v1\n"
+      "e \"Ground\" mesh plane pos 0 0 0 scale 20 1 20 color 0.22 0.45 0.24 rough 0.95\n"
+      "e \"GoalPostLeft\" mesh cube pos -2 1 -2 scale 0.12 2 0.12 color 0.9 0.9 0.9 rough 0.4\n"
+      "e \"GoalPostRight\" mesh cube pos 2 1 -2 scale 0.12 2 0.12 color 0.9 0.9 0.9 rough 0.4\n"
+      "e \"GoalBar\" mesh cube pos 0 2.02 -2 scale 4.12 0.12 0.12 color 0.9 0.9 0.9 rough 0.4\n"
+      "e \"Ball\" mesh sphere pos 0 0.12 0 scale 0.24 0.24 0.24 color 0.95 0.95 0.92 rough 0.3\n"
+      "e \"Player\" mesh cube pos 0 0.5 4 scale 0.6 1 0.6 color 0.2 0.5 0.9 rough 0.5\n";
+  const std::string path = tmpPath("net_state.kimia");
+  {
+    std::FILE* file = std::fopen(path.c_str(), "wb");
+    KIMIA_REQUIRE(file != nullptr);
+    std::fwrite(text.data(), 1U, text.size(), file);
+    std::fclose(file);
+  }
+  WorldEditor editor;
+  std::string error;
+  KIMIA_REQUIRE(editor.loadWorld(path, error));
+  editor.choose(3);  // PLAY
+  // Behind the bar (z = -2), inside the posts (x = +-2), under the bar (y = 2.02)
+  // and not moving: no crossing this frame, or ever.
+  editor.setBallPosition(Vec3{0.0, editor.world().ball.radius, -2.6});
+  editor.setBallVelocity(Vec3{0.0, 0.0, 0.0});
+  editor.update(1.0 / 60.0);
+  KIMIA_REQUIRE(editor.score() == 1U);
 }
 
 KIMIA_TEST(world_offside_only_fires_when_the_player_plays_the_ball) {

@@ -9,7 +9,7 @@
 //   * milliseconds per fixed step (the number a frame budget is spent from),
 //   * narrow-phase pair tests per step (the work the broad phase saved),
 //   * what an all-pairs scan would have paid (the number to compare against),
-//   * how many grid cells were rebuilt and how many candidate pairs offered.
+//   * how many pair candidates the sweep offered and how many of them needed a test.
 //
 // It is a benchmark, not a test: nothing here asserts a wall-clock time, so a
 // slow CI machine cannot fail the build. The tests (Tests/src/PhysicsTests.cpp)
@@ -122,7 +122,7 @@ void printScene(const Scene& scene, u32 steps, bool linear) {
   PhysicsWorld grid = build(scene);
   grid.setBroadPhaseEnabled(true);
   const Result withGrid = measure(grid, steps);
-  std::printf("  %-9s %12.3f %16.0f %16.0f %14.0f\n", "grid", withGrid.msPerStep,
+  std::printf("  %-9s %12.3f %16.0f %16.0f %14.0f\n", "sweep", withGrid.msPerStep,
               withGrid.pairTestsPerStep, withGrid.candidatePairsPerStep, withGrid.allPairsPerCollect);
 
   if (linear) {

@@ -30,6 +30,12 @@ namespace kimia {
 inline constexpr f64 kWorldKickReach = 0.55;  // horizontal distance player-ball
 inline constexpr f64 kWorldPlayerRadius = 0.35;  // XZ radius the ball collides with
 inline constexpr f64 kWorldPlayerRestitution = 0.4;  // bounce off a still player
+// How much speed the ball keeps off the boards. The street pitch is a cage, so
+// the boards are real: a ball hits them and comes back. Letting the clamp kill
+// the velocity instead parks the ball ON the line, and a ball on the line is
+// unreachable — pushing it back into play needs a player between the ball and
+// the boards, and the pitch ends first.
+inline constexpr f64 kWorldBoardRestitution = 0.55;
 
 // --- Ball control (stage 23) ---
 // Dribbling: a ball this close to a walking player is nudged along instead
@@ -137,6 +143,11 @@ inline constexpr f64 kRulesRestartPause = 1.2;
 // A throw-in is taken from where the ball left, pulled this far back
 // inside the touchline so it restarts in play rather than on the line.
 inline constexpr f64 kRulesRestartInset = 0.3;
+// Where a goal kick is taken from: this far back from the end line, in
+// front of the goal. Further than a throw-in because a keeper plays it
+// out of the six-yard area, not from the paint.
+inline constexpr f64 kRulesGoalKickInset = 2.0;
+
 // Running into an opponent faster than this is a foul, not a fair
 // challenge. A tackle is legal; a charge is not.
 inline constexpr f64 kRulesFoulSpeed = 3.4;
@@ -987,9 +998,15 @@ public:
 
   // --- The laws of the game (stage 29) ---
   // Why play is currently stopped, if it is.
-  enum class Stoppage { None, ThrowIn, Offside, Foul };
+  enum class Stoppage { None, ThrowIn, GoalKick, Offside, Foul };
 
   bool rulesEnabled() const { return world_.profile.rules; }
+  // Is there a goal at this end of the pitch? The scene says so, and the AI
+  // has to know: a side that shoots "at the net" on a pitch that has no net is
+  // shooting at the boards, and a ball pinned against the boards by a repeated
+  // push never moves again. Computed when the physics is rebuilt, so this is a
+  // lookup in the AI loop, not a scene scan.
+  bool goalAtEnd(bool plusEnd) const { return plusEnd ? goalAtPlusEnd_ : goalAtMinusEnd_; }
   Stoppage stoppage() const { return stoppage_; }
   bool playStopped() const { return stoppage_ != Stoppage::None; }
   // Seconds left before the restart is taken (0 when play is live).
@@ -1048,6 +1065,9 @@ private:
   std::vector<std::string> sortedHoleNames() const;   // Hole_1, Hole_2, ... (by number)
   void startRound();                                  // cup 0, empty scorecard
   void rebuildPhysics();
+
+  bool goalAtPlusEnd_ = false;
+  bool goalAtMinusEnd_ = false;
   void resetBallToCenter();
   void enterPlay();
   void spawnSquads();  // formation for the current profile's «team N»
@@ -1068,7 +1088,7 @@ private:
   bool arenaShoot(u32 id, const Vec3& aim);  // one fighter pulls the trigger
   Vec3 aiSeparation(u32 id) const;  // push away from crowding team-mates
   void updateStamina(f64 seconds, bool running);
-  void updateRules(f64 seconds, const Vec3& previousBall);
+  void updateRules(f64 seconds);
   void awardRestart(Stoppage reason, u32 team, const Vec3& spot);
   f64 trickDuration(Trick trick) const;
   u32 trickPoints(Trick trick) const;
