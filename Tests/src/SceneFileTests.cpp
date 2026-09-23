@@ -417,7 +417,7 @@ KIMIA_TEST(sceneio_shipped_worlds_roundtrip_byte_identical) {
 #else
   const std::string worldsDir = "Worlds";
 #endif
-  const std::vector<std::string> names = {"anim_demo.kimia", "kimia_poster.kimia", "street_kids.kimia"};
+  const std::vector<std::string> names = {"anim_demo.kimia", "kimia_poster.kimia", "street_kids.kimia", "street_match.kimia"};
   for (const std::string& name : names) {
     const std::string path = worldsDir + "/" + name;
     std::ifstream file(path, std::ios::binary);
