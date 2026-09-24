@@ -26,7 +26,8 @@
 
 - **Windows** — یک `kimia_world.exe` خودکفا (D3D11 روی کارت گرافیک، fallback نرم‌افزاری).
 - **Android** — یک APK بومی که روی `SurfaceView` با **GLES3** رندر می‌گیرد (fallback نرم‌افزاری)؛ بدون WebView.
-- هر دو روی **GitHub Actions** ساخته می‌شوند (آرتیفکت‌ها: `kimia-world-windows-x64` و `kimia-world-debug-apk`).
+- هر دو پیش‌تر روی **GitHub Actions** ساخته می‌شدند (آرتیفکت‌ها: `kimia-world-windows-x64` و `kimia-world-debug-apk`)؛ از 0.30 به درخواست مالک پروژه workflowها `.disabled` شده‌اند و ساخت ویندوز/اندروید دستی است.
+- گیت مرجع کیفیت، اجرای محلی است: `bash Tools/run_tests.sh` (و `--sanitize` / `--tsan`).
 
 جزئیات نصب و اجرا: [GettingStarted](Documentation/GettingStarted.md).
 
