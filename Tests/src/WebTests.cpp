@@ -65,7 +65,10 @@ HttpResponse request(u16 port, const std::string& method, const std::string& tar
   usize lineStart = firstLineEnd + 2U;
   while (lineStart < headerEnd) {
     const usize lineEnd = raw.find("\r\n", lineStart);
-    if (lineEnd == std::string::npos || lineEnd >= headerEnd) break;
+    // The final header line ends exactly where the blank line starts, so
+    // lineEnd == headerEnd is a normal line, not a reason to stop; the old
+    // comparison silently dropped whichever header came last.
+    if (lineEnd == std::string::npos || lineEnd > headerEnd) break;
     const std::string line = raw.substr(lineStart, lineEnd - lineStart);
     const usize colon = line.find(':');
     if (colon != std::string::npos) {
@@ -122,7 +125,10 @@ HttpResponse rangeRequest(u16 port, const std::string& target, const std::string
   usize lineStart = firstLineEnd + 2U;
   while (lineStart < headerEnd) {
     const usize lineEnd = raw.find("\r\n", lineStart);
-    if (lineEnd == std::string::npos || lineEnd >= headerEnd) break;
+    // The final header line ends exactly where the blank line starts, so
+    // lineEnd == headerEnd is a normal line, not a reason to stop; the old
+    // comparison silently dropped whichever header came last.
+    if (lineEnd == std::string::npos || lineEnd > headerEnd) break;
     const std::string line = raw.substr(lineStart, lineEnd - lineStart);
     const usize colon = line.find(':');
     if (colon != std::string::npos) {
@@ -268,6 +274,36 @@ KIMIA_TEST(web_unknown_route_is_404) {
   kimia::web::Server server;
   KIMIA_REQUIRE(server.start(0, makeTestPage()));
   KIMIA_REQUIRE(request(server.port(), "GET", "/nope").status == 404);
+  server.stop();
+}
+
+KIMIA_TEST(web_token_bootstrap_never_shifts_or_truncates_the_body) {
+  // The ?token= bootstrap is the one request that carries the secret in the
+  // URL; its answer moves the secret into an HttpOnly cookie by inserting a
+  // header line. Inserting that line WITH its own trailing CRLF put three
+  // CRLFs in a row into the response, and a client splits headers at the
+  // FIRST blank line: two stray bytes joined the body and the body's last two
+  // bytes fell past Content-Length. The shipped page survived because only
+  // its very first request used ?token=; a probe using it everywhere read
+  // truncated JSON. This test is that probe.
+  kimia::web::Server server;
+  kimia::web::ServerOptions options;
+  options.authToken = "sekret";
+  KIMIA_REQUIRE(server.start(0, makeTestPage(), options));
+  server.setApiHandler([](const std::string& path,
+                          const std::map<std::string, std::string>&) {
+    return std::string("{\"path\":\"") + path + "\",\"ok\":true,\"n\":1234567890}";
+  });
+
+  const HttpResponse bootstrap = request(server.port(), "GET", "/api/thing?token=sekret");
+  KIMIA_REQUIRE(bootstrap.status == 200);
+  KIMIA_REQUIRE(bootstrap.headers.count("set-cookie") == 1U);
+  // Byte-exact: no stray CRLF in front, nothing cut off the end. A shifted
+  // body fails this, and so does a Content-Length-truncated one.
+  KIMIA_REQUIRE(bootstrap.body == "{\"path\":\"/api/thing\",\"ok\":true,\"n\":1234567890}");
+
+  // The bootstrap is the only mercy: a wrong token is still refused.
+  KIMIA_REQUIRE(request(server.port(), "GET", "/api/thing?token=wrong").status == 401);
   server.stop();
 }
 

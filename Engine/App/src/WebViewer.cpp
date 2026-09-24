@@ -642,8 +642,14 @@ void handleConnection(SocketHandle socket, std::shared_ptr<Server::Impl> impl) {
       if (safe && queryToken != params.end() && queryToken->second == impl->authToken) {
         const usize headerEnd = response.find("\r\n\r\n");
         if (headerEnd != std::string::npos) {
+          // The inserted line must end at the terminator the response already
+          // has: appending one more CRLF makes THREE in a row, and a client
+          // splits headers at the FIRST blank line — every byte after that,
+          // including the two stray, lands in the body and the body's last two
+          // bytes fall past Content-Length. (Caught by watching /api/ai lose
+          // its closing bracket on the ?token= bootstrap.)
           response.insert(headerEnd, "\r\nSet-Cookie: kimia_token=" + impl->authToken +
-                                      "; Path=/; HttpOnly; SameSite=Strict\r\n");
+                                      "; Path=/; HttpOnly; SameSite=Strict");
         }
       }
     }
