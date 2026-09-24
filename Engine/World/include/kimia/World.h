@@ -178,6 +178,15 @@ inline constexpr f64 kGaitRunFraction = 0.75;
 inline constexpr f64 kGaitStopDecel = 6.0;
 inline constexpr f64 kGaitBlendTime = 0.25;
 
+// Locomotion clip playback. The rate follows the character's REAL speed as a
+// fraction of the profile's run speed, clamped at both ends: crossing a band
+// boundary (a jog that becomes a run) must not make the cycle crawl or race,
+// and a walk is not played at a fifth speed just because the walk band starts
+// low. Idle and stopping keep the authored rate — breathing and a braking step
+// are not strides.
+inline constexpr f64 kGaitClipSpeedMin = 0.35;
+inline constexpr f64 kGaitClipSpeedMax = 1.60;
+
 // --- Camera director (stage 28) ---
 // How fast the camera swings to follow the aim, 1/s.
 inline constexpr f64 kCameraFollowRate = 6.0;
@@ -784,6 +793,28 @@ public:
   Gait gaitState(u32 id) const;
   f64 gaitBlend(u32 id) const;  // 0 right after a change, 1 once settled
 
+  // --- Gait clips: characters animated by how they really move (phase 5) ---
+  //
+  // A match character is a physics body, not a scene entity, so its locomotion
+  // is authored on the role entity the frame already reads for custom rigs:
+  // "Player" for the human, "Keeper" for a keeper when the world names one,
+  // and "Squad" for everyone else. Give that entity a skinned model file and
+  // Animation components whose TRIGGER is a gait state name — idle, walk, run,
+  // sprint, stopping — and each character plays the clip for the gait it is
+  // ACTUALLY in, at a playback rate that follows the speed it ACTUALLY
+  // reached, blended over the same kGaitBlendTime the gait ramp uses. A state
+  // with no clip of its own borrows the next one down (sprint → run → walk →
+  // idle, stopping → walk → idle), because a missing file must not freeze a
+  // running player mid-stride in a T-pose. No role entity, no components, no
+  // skeleton: nothing is animated, exactly as before this existed.
+  const EntityData* characterRoleEntity(u32 id) const;
+  bool characterAnimated(u32 id) const;
+  const std::string& characterClip(u32 id) const;  // "" while nothing is bound
+  f64 characterClipSpeed(u32 id) const;            // 1.0 = the authored rate
+  // The skinned pose for a frame, in the character's own bone order. False
+  // whenever there is nothing to deform — the caller keeps its old figure.
+  bool posedCharacterMesh(u32 id, MeshData& out);
+
   enum class GameEvent { Shot, Kick, Pass, Save, Holed, Goal, RoundOver, Whistle, Tackle, Trick };
   std::vector<GameEvent> drainEvents();
   // The trigger name a built-in event fires ("goal", "kick", ...), so a
@@ -1320,6 +1351,25 @@ private:
   std::map<u32, f64> gaitPrevSpeed_;
   std::map<u32, Vec3> gaitPrevPos_;  // achieved speed = displacement, not asked speed
   void updateGait(f64 seconds);
+
+  // One locomotion animation per character, driven by the gait above. The
+  // Animator does the retargeting and the cross-fade; this holds which state
+  // it is currently playing so a frame that only changes SPEED never restarts
+  // the clip.
+  struct CharacterAnimation {
+    Animator animator;
+    std::string clip;   // clip name currently playing ("" = nothing bound)
+    std::string file;   // where that clip came from, for diagnostics
+    f64 speed = 1.0;    // playback rate actually applied
+    Gait state = Gait::Idle;
+    bool valid = false;
+  };
+  std::map<u32, CharacterAnimation> characterAnims_;
+  void updateCharacterAnimation(f64 seconds);
+  // The clip an author bound to this gait state, or the next one down the
+  // chain when the state itself has no binding. Null when nothing applies.
+  const AnimationComponent* gaitClipFor(const EntityData& role, Gait state) const;
+  f64 gaitClipSpeed(Gait state, f64 achieved) const;
   std::map<u32, Vec3> aiLastPos_;
   std::map<u32, f64> aiStuckFor_;
   std::map<u32, f64> aiUnstickFor_;

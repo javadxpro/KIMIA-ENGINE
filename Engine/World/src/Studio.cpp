@@ -672,6 +672,10 @@ std::string handleApi(WorldEditor& editor, const std::string& path,
       out += ",\"role\":" + quoted(WorldEditor::aiRoleName(editor.aiRole(id)));
       out += ",\"gait\":" + quoted(WorldEditor::gaitStateName(editor.gaitState(id)));
       out += ",\"gaitBlend\":" + number(editor.gaitBlend(id));
+      // The pose that gait is actually playing, and how fast: the same numbers
+      // the frame poses the model with, so the panel and the pitch agree.
+      out += ",\"clip\":" + quoted(editor.characterClip(id));
+      out += ",\"clipSpeed\":" + number(editor.characterClipSpeed(id));
       out += ",\"action\":" + quoted(WorldEditor::aiActionName(decision.action));
       out += ",\"x\":" + number(editor.squadPosition(id).x);
       out += ",\"z\":" + number(editor.squadPosition(id).z);
@@ -1430,6 +1434,10 @@ input[type=checkbox]{width:auto}
       <div id="motions"></div>
       <div class="row"><input id="mClip" placeholder="clip name"></div>
       <div class="row"><label>button</label><input id="mWire" placeholder="k or goal"></div>
+      <div class="row" style="opacity:.7;font-size:11px">Gait triggers: <b>idle</b> <b>walk</b> <b>run</b>
+        <b>sprint</b> <b>stopping</b> &mdash; wire them on the object named <b>Player</b>,
+        <b>Keeper</b> or <b>Squad</b>, with a skinned model, and the match characters play
+        the clip of the gait they are really in.</div>
       <div class="row"><button class="go" style="flex:1" onclick="wireMotion()">Wire up</button>
         <button class="bad" onclick="unwire('motions')">Clear</button></div>
 

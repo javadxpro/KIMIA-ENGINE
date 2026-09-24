@@ -353,6 +353,24 @@ bool WorldEditor::posedMesh(const std::string& entityName, MeshData& out) {
   return skinMesh(asset->skinned, matrices, out);
 }
 
+// The same pose, for a character rather than an entity. A match player is a
+// physics body with no entity of its own, so its animation lives in
+// characterAnims_ (see World.cpp) and its skeleton comes from the role entity
+// the author skinned ("Player", "Keeper" or "Squad").
+bool WorldEditor::posedCharacterMesh(u32 id, MeshData& out) {
+  const auto at = characterAnims_.find(id);
+  if (at == characterAnims_.end() || !at->second.valid) return false;
+  const EntityData* role = characterRoleEntity(id);
+  const assets::SkinnedAsset* asset = role == nullptr ? nullptr : skinnedForEntity(*role);
+  if (asset == nullptr || asset->skinned.bindMesh.positions.empty()) return false;
+
+  std::vector<Transform3D> pose;
+  if (!at->second.animator.samplePose(pose)) return false;
+  std::vector<Mat4> matrices;
+  computeSkinMatrices(asset->skinned.skeleton, pose, matrices);
+  return skinMesh(asset->skinned, matrices, out);
+}
+
 bool WorldEditor::posedStickMesh(const std::string& entityName, MeshData& out) {
   const EntityData* target = entity(entityName);
   if (target == nullptr || (target->meshFile.empty() && target->rig.empty())) return false;

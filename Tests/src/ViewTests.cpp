@@ -408,6 +408,54 @@ KIMIA_TEST(view_chase_camera_eases_toward_the_aim) {
 
 // --- Scene builder -----------------------------------------------------------
 
+// The locomotion wiring, seen from the frame. The world test proves the pose
+// is real; this proves the DRAW LIST uses it: a squad member with a skinned
+// model and gait clips is emitted as a posed mesh, and the same world without
+// those assets still emits the old jointed figures. Without this the picture
+// could be right in the editor and wrong on the pitch.
+KIMIA_TEST(view_squad_characters_are_drawn_from_their_gait_pose) {
+  const std::string head =
+      "# KIMIA scene v1\n"
+      "# name GaitView\n"
+      "# profile name sandbox\n"
+      "# profile team 3\n"
+      "# profile ai 0.6\n"
+      "e \"Ground\" mesh plane pos 0 0 0 scale 12 1 12 color 0.1 0.35 0.12 rough 0.9\n"
+      "e \"Player\" mesh cube pos 0 0.5 4 scale 1 1 1 color 0.9 0.9 0.9 rough 0.6\n";
+  const std::string squad =
+      "e \"Squad\" mesh cube pos 0 0 0 scale 1 1 1 meshfile \"Tests/assets/skinned_bar_gait.fbx\" "
+      "color 0.25 0.45 0.95 rough 0.6 anim \"Idle\" \"idle\" loop 1.000000 "
+      "anim \"Stride\" \"walk\" loop 1.000000 anim \"Stride\" \"run\" loop 1.000000\n";
+
+  AssetManager assets;
+  assets.setProjectRoot(KIMIA_ASSET_DIR);
+
+  const auto draw = [&assets](const std::string& text) {
+    const std::string path = tmpPath("view_gait_scene.kimia");
+    std::FILE* file = std::fopen(path.c_str(), "wb");
+    KIMIA_REQUIRE(file != nullptr);
+    KIMIA_REQUIRE(std::fwrite(text.data(), 1U, text.size(), file) == text.size());
+    std::fclose(file);
+    WorldEditor editor;
+    editor.setImportDirectory(KIMIA_ASSET_DIR);
+    std::string error;
+    KIMIA_REQUIRE(editor.loadWorld(path, error));
+    KIMIA_REQUIRE(editor.enterPlayMode());
+    for (kimia::i32 f = 0; f < 90; ++f) editor.update(1.0 / 60.0);
+    RenderSceneBuilder builder(assets);
+    RenderScene scene;
+    builder.build(editor, scene);
+    KIMIA_REQUIRE(!scene.objects.empty());
+    return builder.report();
+  };
+
+  const kimia::SceneBuildReport plain = draw(head);
+  KIMIA_REQUIRE(plain.posedCharacters == 0U);
+
+  const kimia::SceneBuildReport posed = draw(head + squad);
+  KIMIA_REQUIRE(posed.posedCharacters > 0U);
+}
+
 KIMIA_TEST(view_scene_builder_uses_the_asset_manager_and_never_reloads) {
   AssetManager assets;
   assets.setProjectRoot(KIMIA_ASSET_DIR);

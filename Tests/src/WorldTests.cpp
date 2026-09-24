@@ -4101,6 +4101,47 @@ void streetWithNets(WorldEditor& editor) {
   editor.setBallPosition(Vec3{0.0, editor.world().ball.radius, 0.0});
   editor.setBallVelocity(Vec3{0.0, 0.0, 0.0});
 }
+
+// Author locomotion the way the Workbench does: through the scene file. The
+// characters in a match are physics bodies with no entity of their own, so
+// their clips live on the role entity the frame already reads for rigs —
+// "Squad" — with each clip's TRIGGER naming the gait state it belongs to.
+// Saving and loading through the real format is the point: this is the same
+// text a saved world travels as, so the test proves the wiring survives it.
+void authorSquadGaitClips(WorldEditor& editor, const std::string& file,
+                          const std::string& idleClip, const std::string& moveClip) {
+  std::string saved;
+  KIMIA_REQUIRE(kimia::WorldIO::save(editor.world(), saved));
+  // Replace the role entity rather than adding a second one: a scene with two
+  // entities of the same name is not a scene the editor can produce, and a
+  // test that authors one would be testing its own bug.
+  std::string text;
+  kimia::usize cursor = 0U;
+  while (cursor <= saved.size()) {
+    const kimia::usize end = saved.find('\n', cursor);
+    const std::string line = saved.substr(cursor, end == std::string::npos ? std::string::npos : end - cursor);
+    if (line.rfind("e \"Squad\"", 0U) != 0U) {
+      text += line;
+      text += "\n";
+    }
+    if (end == std::string::npos) break;
+    cursor = end + 1U;
+  }
+  text += "e \"Squad\" mesh cube pos 0.000000 0.000000 0.000000 scale 1.000000 1.000000 1.000000 "
+          "meshfile \"" + file + "\" color 0.250000 0.450000 0.950000 rough 0.600000 "
+          "anim \"" + idleClip + "\" \"idle\" loop 1.000000 "
+          "anim \"" + moveClip + "\" \"walk\" loop 1.000000 "
+          "anim \"" + moveClip + "\" \"run\" loop 1.000000\n";
+
+  const std::string path = tmpPath("gait_clips.kimia");
+  std::FILE* out = std::fopen(path.c_str(), "wb");
+  KIMIA_REQUIRE(out != nullptr);
+  KIMIA_REQUIRE(std::fwrite(text.data(), 1U, text.size(), out) == text.size());
+  std::fclose(out);
+
+  std::string error;
+  KIMIA_REQUIRE(editor.loadWorld(path, error));
+}
 }  // namespace
 
 KIMIA_TEST(world_ai_actually_scores_goals) {
@@ -4485,6 +4526,134 @@ KIMIA_TEST(world_a_sudden_stop_passes_through_stopping_and_blends) {
   // Settled again: whatever the state now, its blend has finished ramping.
   for (i32 f = 0; f < 30; ++f) editor.update(1.0 / 60.0);
   KIMIA_REQUIRE(editor.gaitBlend(kimia::kPrimaryCharacter) > 0.9);
+}
+
+KIMIA_TEST(world_characters_play_the_clip_of_the_gait_they_are_actually_in) {
+  // Phase 5, second increment: the pose follows the gait and the playback rate
+  // follows the speed the body actually reached. The rule is checked as an
+  // invariant over a whole match rather than at one chosen frame, because the
+  // point is that it holds while the football happens: a character reading
+  // Idle is on the idle clip, anybody moving is on the striding one, and a
+  // walk never plays faster than a run.
+  WorldEditor editor;
+  streetWithNets(editor);
+  authorSquadGaitClips(editor, "Tests/assets/skinned_bar_gait.fbx", "Idle", "Stride");
+  editor.setAiSkill(0.6);
+  KIMIA_REQUIRE(editor.enterPlayMode());
+
+  bool sawIdle = false;
+  bool sawMove = false;
+  bool sawStopping = false;
+  f64 fastestWalk = 0.0;
+  f64 slowestRun = 2.0;
+  u32 animated = 0U;
+  for (i32 f = 0; f < 1800; ++f) {  // half a minute of football
+    editor.update(1.0 / 60.0);
+    for (const u32 id : editor.squadIds()) {
+      if (id == kimia::kPrimaryCharacter) continue;  // the human has no model here
+      const std::string clip = editor.characterClip(id);
+      if (clip.empty()) continue;  // nothing bound for this one: not animated
+      animated = id;
+      const kimia::WorldEditor::Gait state = editor.gaitState(id);
+      const f64 rate = editor.characterClipSpeed(id);
+      if (state == kimia::WorldEditor::Gait::Idle) {
+        KIMIA_REQUIRE(clip == "Idle");
+        KIMIA_REQUIRE(rate == 1.0);  // a stance is not a stride: authored rate
+        sawIdle = true;
+      } else if (state == kimia::WorldEditor::Gait::Stopping) {
+        // A braking step borrows the walk it is leaving, not the idle it
+        // has not reached: falling back is the chain, not a freeze.
+        KIMIA_REQUIRE(clip == "Stride");
+        sawStopping = true;
+      } else {
+        KIMIA_REQUIRE(clip == "Stride");
+        KIMIA_REQUIRE(rate >= kimia::kGaitClipSpeedMin);
+        KIMIA_REQUIRE(rate <= kimia::kGaitClipSpeedMax);
+        if (state == kimia::WorldEditor::Gait::Walk) {
+          fastestWalk = std::max(fastestWalk, rate);
+        } else {
+          slowestRun = std::min(slowestRun, rate);
+        }
+        sawMove = true;
+      }
+    }
+  }
+  KIMIA_REQUIRE(sawIdle);
+  KIMIA_REQUIRE(sawMove);
+  KIMIA_REQUIRE(sawStopping);
+  // The rate is the real speed, band by band: the fastest walk is still at or
+  // below the run band's floor, so a player who sped up cannot be shown
+  // walking faster than one who is running.
+  KIMIA_REQUIRE(fastestWalk <= slowestRun + 1e-9);
+  // And the pose is geometry, not a promise: the clip actually BENDS the mesh
+  // away from its bind pose, which a stolen frame or a stub could never fake.
+  KIMIA_REQUIRE(editor.characterAnimated(animated));
+  kimia::MeshData pose;
+  KIMIA_REQUIRE(editor.posedCharacterMesh(animated, pose));
+  std::string assetError;
+  const auto bind = kimia::assets::loadFBXSkinned("Tests/assets/skinned_bar_gait.fbx", assetError);
+  KIMIA_REQUIRE(bind.has_value());
+  KIMIA_REQUIRE(pose.positions.size() == bind->skinned.bindMesh.positions.size());
+  f64 moved = 0.0;
+  for (kimia::usize v = 0; v < pose.positions.size(); ++v) {
+    const kimia::Vec3 delta = pose.positions[v] - bind->skinned.bindMesh.positions[v];
+    moved += std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+  }
+  KIMIA_REQUIRE(moved > 0.05);  // the tip bone is somewhere other than where it rests
+}
+
+KIMIA_TEST(world_a_world_with_no_character_assets_keeps_the_plain_figures) {
+  // The backward compatibility half, and the reason this increment is safe to
+  // ship before any character art exists: a world that names no model carries
+  // no locomotion animation at all. The old jointed figures still draw, and
+  // nothing about them changed.
+  WorldEditor editor;
+  streetWithNets(editor);
+  editor.setAiSkill(0.6);
+  for (i32 f = 0; f < 240; ++f) {
+    editor.update(1.0 / 60.0);
+    for (const u32 id : editor.squadIds()) {
+      KIMIA_REQUIRE(!editor.characterAnimated(id));
+      KIMIA_REQUIRE(editor.characterClip(id).empty());
+      KIMIA_REQUIRE(editor.characterClipSpeed(id) == 1.0);
+      KIMIA_REQUIRE(editor.characterRoleEntity(id) == nullptr);
+      kimia::MeshData mesh;
+      KIMIA_REQUIRE(!editor.posedCharacterMesh(id, mesh));
+    }
+  }
+}
+
+KIMIA_TEST(world_gait_clip_wiring_survives_the_file_and_refuses_a_missing_clip) {
+  // Two halves of the same contract. The wiring is ordinary scene data — a
+  // model file and Animation components whose triggers are gait names — so it
+  // must survive save/load exactly like any other component. And a clip name
+  // nobody has must animate NOBODY: the engine keeps the plain figure instead
+  // of inventing a pose from a file that has no such clip.
+  WorldEditor editor;
+  streetWithNets(editor);
+  authorSquadGaitClips(editor, "Tests/assets/skinned_bar_gait.fbx", "Idle", "Stride");
+  const kimia::EntityData* squad = editor.entity("Squad");
+  KIMIA_REQUIRE(squad != nullptr);
+  KIMIA_REQUIRE(squad->meshFile == "Tests/assets/skinned_bar_gait.fbx");
+  KIMIA_REQUIRE(squad->animations.size() == 3U);
+  KIMIA_REQUIRE(squad->animations[0].trigger == "idle");
+  KIMIA_REQUIRE(squad->animations[1].trigger == "walk");
+
+  WorldEditor missing;
+  streetWithNets(missing);
+  authorSquadGaitClips(missing, "Tests/assets/skinned_bar_gait.fbx", "NoSuchClip", "AlsoMissing");
+  missing.setAiSkill(0.6);
+  KIMIA_REQUIRE(missing.enterPlayMode());
+  for (i32 f = 0; f < 180; ++f) {
+    missing.update(1.0 / 60.0);
+    for (const u32 id : missing.squadIds()) {
+      if (id == kimia::kPrimaryCharacter) continue;
+      KIMIA_REQUIRE(!missing.characterAnimated(id));
+      KIMIA_REQUIRE(missing.characterClip(id).empty());
+      kimia::MeshData mesh;
+      KIMIA_REQUIRE(!missing.posedCharacterMesh(id, mesh));
+    }
+  }
 }
 
 KIMIA_TEST(world_ai_shoots_from_close_range_and_carries_when_nothing_is_better) {

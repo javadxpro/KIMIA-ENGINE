@@ -114,6 +114,12 @@ void Animator::update(f64 seconds) {
   }
 }
 
+void Animator::setPlaybackSpeed(f64 speed) {
+  if (!(speed > 0.0) || !std::isfinite(speed)) return;
+  if (!current_.valid()) return;
+  current_.speed = speed;
+}
+
 void Animator::stop() {
   current_ = State{};
   previous_ = State{};

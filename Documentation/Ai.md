@@ -65,7 +65,7 @@
 با **همهٔ امتیازها**:
 
 ```json
-{"id":8,"team":2,"role":"ATTACK","action":"pass","gait":"run","gaitBlend":1.0,
+{"id":8,"team":2,"role":"ATTACK","action":"pass","gait":"run","gaitBlend":1.0,"clip":"Run","clipSpeed":0.92,
  "targetX":0.4,"targetZ":-2.0,
  "targetId":21,"score":0.712,"runnerUp":0.35,"shoot":0.0,"pass":0.712,"carry":0.35}
 ```

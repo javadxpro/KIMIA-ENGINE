@@ -55,6 +55,15 @@ public:
   void update(f64 seconds);
   void stop();
 
+  // Changes the playback rate of the RUNNING state without restarting the
+  // clip: the pose keeps its place in the cycle while the character speeds up
+  // or slows down. Locomotion needs this every frame — restarting the cycle on
+  // every speed change is exactly the foot-stutter the gait wiring exists to
+  // remove. A non-finite or non-positive rate is ignored (the last good rate
+  // stays), and a stopped animator has nothing to retune.
+  void setPlaybackSpeed(f64 speed);
+  f64 playbackSpeed() const { return current_.speed; }
+
   bool playing() const { return current_.valid(); }
   const std::string& currentAction() const { return currentAction_; }
   const std::string& currentClip() const;

@@ -17,8 +17,9 @@ namespace kimia {
 // holding on to, so a frame that quietly stopped drawing a model shows up
 // here instead of only in a screenshot.
 struct SceneBuildReport {
-  usize objects = 0U;       // draw calls pushed into the scene
-  usize posedEntities = 0U;  // entities re-posed from an animation this frame
+  usize objects = 0U;         // draw calls pushed into the scene
+  usize posedEntities = 0U;   // entities re-posed from an animation this frame
+  usize posedCharacters = 0U; // match characters drawn from a gait-clip pose
   usize missingAssets = 0U;
   AssetManager::Stats assets{};
 };
@@ -69,7 +70,7 @@ private:
   void addSelectionMarkers(RenderScene& scene, const EntityData& entity) const;
   void addGhostShape(RenderScene& scene, const WorldEditor& editor) const;
   void addAimIndicator(RenderScene& scene, const WorldEditor& editor) const;
-  void addSquads(RenderScene& scene, const WorldEditor& editor);
+  void addSquads(RenderScene& scene, WorldEditor& editor);
   void addCurrentCupFlag(RenderScene& scene, const WorldEditor& editor) const;
   void addLimbs(RenderScene& scene, const std::vector<FigureLimb>& limbs, const Vec3& color) const;
   void addFigure(RenderScene& scene, const Skeleton& rig, const FigureMotion& motion, const Vec3& at,

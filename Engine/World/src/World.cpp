@@ -528,6 +528,130 @@ void WorldEditor::updateGait(f64 seconds) {
   }
 }
 
+// The entity a character's locomotion is authored on (see World.h): the human
+// reads "Player", a keeper a world may name "Keeper", and everybody else
+// "Squad" — the same rule the frame already uses for hand-drawn rigs, so a
+// world that re-bones its players can re-skin them the same way.
+const EntityData* WorldEditor::characterRoleEntity(u32 id) const {
+  if (id == kPrimaryCharacter) return entity("Player");
+  if (aiActive() && aiKeeper(squadTeam(id)) == id) {
+    if (const EntityData* keeper = entity("Keeper")) return keeper;
+  }
+  return entity("Squad");
+}
+
+bool WorldEditor::characterAnimated(u32 id) const {
+  const auto at = characterAnims_.find(id);
+  return at != characterAnims_.end() && at->second.valid && at->second.animator.playing();
+}
+
+const std::string& WorldEditor::characterClip(u32 id) const {
+  static const std::string none;
+  const auto at = characterAnims_.find(id);
+  return at == characterAnims_.end() ? none : at->second.clip;
+}
+
+f64 WorldEditor::characterClipSpeed(u32 id) const {
+  const auto at = characterAnims_.find(id);
+  return at == characterAnims_.end() ? 1.0 : at->second.speed;
+}
+
+// Which clip a gait state plays, walking down the chain when the state itself
+// has no binding: a sprint with no sprint file runs, a run with no run file
+// walks, a walk with no walk file idles, and a braking step borrows the walk
+// it is leaving. Idle is the end of the chain — a character with no idle
+// binding is simply not animated, which is the old behaviour.
+const AnimationComponent* WorldEditor::gaitClipFor(const EntityData& role, Gait state) const {
+  const auto bound = [&role](const char* trigger) -> const AnimationComponent* {
+    for (const AnimationComponent& candidate : role.animations) {
+      if (candidate.trigger == trigger && !candidate.clip.empty()) return &candidate;
+    }
+    return nullptr;
+  };
+  const auto chain = [&bound](const char* first, const char* second, const char* third,
+                              const char* fourth) -> const AnimationComponent* {
+    if (const AnimationComponent* found = bound(first)) return found;
+    if (const AnimationComponent* found = bound(second)) return found;
+    if (const AnimationComponent* found = bound(third)) return found;
+    return bound(fourth);
+  };
+  switch (state) {
+    case Gait::Idle: return bound("idle");
+    case Gait::Walk: return chain("walk", "idle", "idle", "idle");
+    case Gait::Run: return chain("run", "walk", "idle", "idle");
+    case Gait::Sprint: return chain("sprint", "run", "walk", "idle");
+    case Gait::Stopping: return chain("stopping", "walk", "idle", "idle");
+  }
+  return bound("idle");
+}
+
+// The rate a locomotion clip plays at, from the speed the body actually
+// reached. Idle and stopping keep the authored rate; the moving bands scale
+// with real speed against the profile's run speed, clamped so a band change
+// never makes the cycle crawl or race (see kGaitClipSpeedMin/Max).
+f64 WorldEditor::gaitClipSpeed(Gait state, f64 achieved) const {
+  if (state == Gait::Idle || state == Gait::Stopping) return 1.0;
+  const f64 run = world_.player.speed > 0.01 ? world_.player.speed : 1.0;
+  return std::clamp(achieved / run, kGaitClipSpeedMin, kGaitClipSpeedMax);
+}
+
+// Locomotion animation (phase 5, second increment): the pose follows the gait
+// the body is actually in and the playback rate follows the speed it actually
+// reached. Everything heavy — the FBX parse, the retarget map, the cross-fade —
+// is the Animator's, the same one triggered clips use; this only decides WHICH
+// clip and HOW FAST, and only in play mode (updateGait is the caller's sibling).
+void WorldEditor::updateCharacterAnimation(f64 seconds) {
+  if (physics_.characterCount() == 0U) return;
+  for (const u32 id : physics_.characterIds()) {
+    const EntityData* role = characterRoleEntity(id);
+    const assets::SkinnedAsset* target = role == nullptr ? nullptr : skinnedForEntity(*role);
+    if (target == nullptr) {
+      characterAnims_.erase(id);
+      continue;
+    }
+
+    CharacterAnimation& anim = characterAnims_[id];
+    anim.animator.setTarget(&target->skinned.skeleton);
+    const Gait state = gaitState(id);
+    if (!anim.valid || anim.state != state) {
+      const AnimationComponent* binding = gaitClipFor(*role, state);
+      if (binding != nullptr) {
+        const std::string file = role->meshFile;
+        const assets::SkinnedAsset* source = skinnedFor(file);
+        const AnimationClip* clip = nullptr;
+        if (source != nullptr) {
+          for (const AnimationClip& candidate : source->clips) {
+            if (candidate.name == binding->clip) {
+              clip = &candidate;
+              break;
+            }
+          }
+        }
+        if (clip != nullptr && Animator::retargetable(source->skinned.skeleton, target->skinned.skeleton)) {
+          const AnimatorClip reference{&source->skinned.skeleton, clip, file};
+          if (anim.animator.bindAction(binding->clip, reference, true, 1.0, kGaitBlendTime) &&
+              anim.animator.playAction(binding->clip)) {
+            anim.clip = binding->clip;
+            anim.file = file;
+            anim.valid = true;
+          }
+        }
+      }
+      // The state is recorded even when nothing could be bound: an unbound
+      // state must reuse whatever is playing, not retry (and so restart) the
+      // same lookup on every frame of a walk.
+      anim.state = state;
+    }
+    if (!anim.valid) continue;
+
+    const auto speedAt = gaitPrevSpeed_.find(id);
+    const f64 achieved = speedAt == gaitPrevSpeed_.end() ? 0.0 : speedAt->second;
+    anim.speed = gaitClipSpeed(state, achieved);
+    anim.animator.setPlaybackSpeed(anim.speed);
+    anim.animator.update(seconds);
+  }
+}
+
 u32 WorldEditor::teamScore(u32 team) const {
   if (team == 1U) return world_.scoreTeam1;
   if (team == 2U) return world_.scoreTeam2;
@@ -930,6 +1054,10 @@ void WorldEditor::update(f64 hostSeconds) {
     // arrives this frame can take the ball off a show-off in the same frame.
     updateAi(hostSeconds);
     updateGait(hostSeconds);
+    // ...and the pose follows it. Same frame, same numbers: the clip is
+    // chosen from the gait the body is in NOW, not from the input the
+    // player is holding.
+    updateCharacterAnimation(hostSeconds);
 
     // Skill moves run on the same clock as everything else, after the
     // ball has been moved and clamped, so a trick that finishes this frame

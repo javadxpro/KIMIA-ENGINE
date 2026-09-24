@@ -234,7 +234,7 @@ const std::vector<CustomBone>* RenderSceneBuilder::customRigFor(const WorldEdito
 // which nobody noticed while they stood still. Now that stage 27 has them
 // running about, an invisible opposition makes a match unplayable. Each
 // character is a jointed figure: our side in blue, theirs in red.
-void RenderSceneBuilder::addSquads(RenderScene& scene, const WorldEditor& editor) {
+void RenderSceneBuilder::addSquads(RenderScene& scene, WorldEditor& editor) {
   if (!editor.playing() || editor.squadCount() <= 1U) return;
   const Vec3 ourColor{0.25, 0.45, 0.95};
   const Vec3 theirColor{0.90, 0.25, 0.25};
@@ -259,6 +259,25 @@ void RenderSceneBuilder::addSquads(RenderScene& scene, const WorldEditor& editor
     motion.downed = down;
     // The feet belong on the floor: the body position is its centre.
     const Vec3 feet{at.x, at.y - kWorldPlayerRadius - 0.15, at.z};
+    // A skinned model with gait clips draws its REAL pose — the same animator
+    // that answers the gait state, so a running AI is actually running rather
+    // than a jointed stick with a swing. The figure below stays the fallback
+    // for every world that has no character asset, which is what keeps old
+    // scenes looking exactly as they did.
+    MeshData posed;
+    if (editor.posedCharacterMesh(id, posed)) {
+      const EntityData* role = editor.characterRoleEntity(id);
+      const Vec3 modelScale = role == nullptr ? Vec3{1.0, 1.0, 1.0} : role->transform.scale;
+      const Vec3 root{feet.x, at.y - 0.5, feet.z};
+      const Mat4 model = Mat4::translation(root) *
+                         Quat::fromAxisAngle(Vec3{0.0, 1.0, 0.0}, editor.squadFacing(id)).toMat4() *
+                         Mat4::scaling(modelScale);
+      const std::string key = "char:" + std::to_string(id);
+      const MeshData* stored = &posedMeshes_.insert_or_assign(key, std::move(posed)).first->second;
+      scene.objects.push_back({stored, model, color, 0.5});
+      ++report_.posedCharacters;
+      continue;
+    }
     // A character with bones of its own uses them (stage 35). The engine's
     // figure is only the fallback for anyone who has not drawn one.
     const std::vector<CustomBone>* own = customRigFor(editor, id);
@@ -407,8 +426,22 @@ void RenderSceneBuilder::build(WorldEditor& editor, RenderScene& scene) {
     if (playCharacter && !entity.meshFile.empty()) position.y -= 0.5;
     const Vec3 scale =
         entity.mesh == MeshKind::sphere ? entity.transform.scale * 0.5 : entity.transform.scale;
-    const Mat4 model =
-        Mat4::translation(position) * entity.transform.rotation.toMat4() * Mat4::scaling(scale);
+    // The human's locomotion pose, when a character model with gait clips is
+    // authored on the Player entity: the person you control bends and strides
+    // like the squad does instead of sliding as an unrotated box. Facing comes
+    // from the body's heading (the motor turns it), not the entity's rest
+    // rotation, and everything else about the draw is unchanged.
+    MeshData characterPose;
+    const bool posedCharacter = playCharacter && editor.posedCharacterMesh(kPrimaryCharacter, characterPose);
+    const Quat facing = posedCharacter
+                            ? Quat::fromAxisAngle(Vec3{0.0, 1.0, 0.0}, editor.squadFacing(kPrimaryCharacter))
+                            : entity.transform.rotation;
+    if (posedCharacter) {
+      mesh = &posedMeshes_.insert_or_assign("@player", std::move(characterPose)).first->second;
+      isPosed = true;
+      ++report_.posedCharacters;
+    }
+    const Mat4 model = Mat4::translation(position) * facing.toMat4() * Mat4::scaling(scale);
     // A model whose file brings its own materials draws one tinted piece per
     // material; anything posed (or without materials) draws whole in the
     // entity color, exactly as before.
