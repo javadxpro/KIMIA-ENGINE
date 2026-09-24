@@ -1333,6 +1333,13 @@ KIMIA_TEST(studio_ai_endpoint_shows_role_target_action_and_score) {
   KIMIA_REQUIRE(has(response, "\"pass\":"));
   KIMIA_REQUIRE(has(response, "\"carry\":"));
   KIMIA_REQUIRE(has(response, "\"targetX\":"));
+  // The pose fields travel with the rest (0.31): whatever gait a player is
+  // reported in, the panel can say which clip is playing for it and how fast,
+  // which is the same pair the frame poses the model with.
+  KIMIA_REQUIRE(has(response, "\"gait\":"));
+  KIMIA_REQUIRE(has(response, "\"gaitBlend\":"));
+  KIMIA_REQUIRE(has(response, "\"clip\":"));
+  KIMIA_REQUIRE(has(response, "\"clipSpeed\":"));
   // One entry per squad member, and the human is in there too (as IDLE): the
   // view shows the whole pitch, not a filtered subset.
   kimia::usize entries = 0U;
