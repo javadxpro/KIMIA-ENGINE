@@ -4,7 +4,10 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - 'arena/01a080a4-ai-codespace'
+      - main
+      - 'arena/**'
+      - 'feature/**'
+  pull_request:
 
 permissions:
   contents: read
